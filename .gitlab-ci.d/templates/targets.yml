@@ -2,7 +2,7 @@
 
 .target:all:
   image:
-    name: $DOCKER_IMAGE_NAME-$TARGET
+    name: $DOCKER_NAME_FULL
   rules:
     - if: "$TARGET =~ $ACTIVE_TARGET_PATTERN"
   before_script:

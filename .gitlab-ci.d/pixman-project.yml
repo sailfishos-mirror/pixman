@@ -10,7 +10,8 @@ stages:
 variables:
   # Docker image global configuration.
   DOCKER_TAG: latest
-  DOCKER_IMAGE_NAME: registry.freedesktop.org/pixman/pixman/pixman:${DOCKER_TAG}
+  DOCKER_REGISTRY_IMAGE: registry.freedesktop.org/pixman/pixman
+  DOCKER_NAME_FULL: ${DOCKER_REGISTRY_IMAGE}/pixman:${DOCKER_TAG}-${TARGET}
 
   # Execute to load a target-specific environment.
   LOAD_TARGET_ENV: source .gitlab-ci.d/01-docker/target-env/${TARGET}.env
@@ -29,7 +30,7 @@ workflow:
           - .gitlab-ci.d/01-docker/**/*
       variables:
         DOCKER_TAG: $CI_COMMIT_REF_SLUG
-        DOCKER_IMAGE_NAME: ${CI_REGISTRY_IMAGE}/pixman:${DOCKER_TAG}
+        DOCKER_REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
 
     # A standard set of GitLab CI triggers (i.e., MR, schedule, default branch,
     # and tag).

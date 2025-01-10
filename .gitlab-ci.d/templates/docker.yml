@@ -35,7 +35,7 @@ spec:
           - .gitlab-ci.d/01-docker/**/*
       variables:
         DOCKER_TAG: $CI_COMMIT_REF_SLUG
-        DOCKER_IMAGE_NAME: ${CI_REGISTRY_IMAGE}/pixman:${DOCKER_TAG}
+        DOCKER_REGISTRY_IMAGE: $CI_REGISTRY_IMAGE
     - if: "$CI_PIPELINE_SOURCE == 'schedule' && $TARGET =~ $ACTIVE_TARGET_PATTERN"
     - if: "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $TARGET =~ $ACTIVE_TARGET_PATTERN"
     - if: "$CI_COMMIT_TAG && $TARGET =~ $ACTIVE_TARGET_PATTERN"
@@ -70,11 +70,10 @@ spec:
   script:
     # Prepare environment.
     - ${LOAD_TARGET_ENV}
-    - FULL_IMAGE_NAME=${DOCKER_IMAGE_NAME}-${TARGET}
 
     # Build and push the image.
     - buildah bud
-        --tag ${FULL_IMAGE_NAME}
+        --tag ${DOCKER_NAME_FULL}
         --layers ${CACHE_ARGS}
         --target ${TARGET}
         --platform=${DOCKER_PLATFORM}
@@ -83,4 +82,4 @@ spec:
         --build-arg LLVM_VERSION=${LLVM_VERSION}
       -f Dockerfile .gitlab-ci.d/01-docker/
     - buildah images
-    - buildah push ${FULL_IMAGE_NAME}
+    - buildah push ${DOCKER_NAME_FULL}
