@@ -47,9 +47,6 @@ workflow:
     on_job_failure: all
 
 default:
-  tags:
-    - kvm
-
   # Retry in case the runner is misconfigured for multi-arch builds or some
   # random unexpected runner error occurs (it happened during testing).
   retry: 1
