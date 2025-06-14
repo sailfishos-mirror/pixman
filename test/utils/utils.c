@@ -585,7 +585,7 @@ fence_get_page_size ()
 uint8_t *
 make_random_bytes (int n_bytes)
 {
-    uint8_t *bytes = fence_malloc (n_bytes);
+    void *bytes = fence_malloc (n_bytes);
 
     if (!bytes)
 	return NULL;
@@ -598,16 +598,18 @@ make_random_bytes (int n_bytes)
 float *
 make_random_floats (int n_bytes)
 {
-    uint8_t *bytes = fence_malloc (n_bytes);
-    float *vals = (float *)bytes;
+    assert (n_bytes >= 0);
 
-    if (!bytes)
+    float *arr = fence_malloc (n_bytes);
+    ptrdiff_t total_count = n_bytes / sizeof (float);
+
+    if (!arr)
 	return 0;
 
-    for (n_bytes /= 4; n_bytes; vals++, n_bytes--)
-	*vals = (float)rand() / (float)RAND_MAX;
+    for (ptrdiff_t count = 0; count < total_count; count++)
+	arr[count] = (float)rand() / (float)RAND_MAX;
 
-    return (float *)bytes;
+    return arr;
 }
 
 void
