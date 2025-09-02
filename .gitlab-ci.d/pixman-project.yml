@@ -1,5 +1,12 @@
 # This file contains the set of jobs run by the pixman project:
 # https://gitlab.freedesktop.org/pixman/pixman/-/pipelines
+spec:
+  inputs:
+    active_target_pattern:
+    runner_tag_amd64:
+    runner_tag_qemu:
+    runner_tag_arm64:
+---
 
 stages:
   - docker
@@ -15,9 +22,6 @@ variables:
 
   # Execute to load a target-specific environment.
   LOAD_TARGET_ENV: source .gitlab-ci.d/01-docker/target-env/${TARGET}.env
-
-  # Enable/disable specific targets for code and platform coverage targets.
-  ACTIVE_TARGET_PATTERN: '/linux-386|linux-amd64|linux-arm-v5|linux-arm-v7|linux-arm64-v8|linux-mips|linux-mips64le|linux-mipsel|linux-ppc|linux-ppc64|linux-ppc64le|linux-riscv64|windows-686|windows-amd64|windows-arm64-v8/i'
 
 workflow:
   rules:
@@ -53,7 +57,24 @@ default:
 
 include:
   - local: "/.gitlab-ci.d/templates/targets.yml"
+    inputs:
+      active_target_pattern: $[[ inputs.active_target_pattern ]]
   - local: "/.gitlab-ci.d/01-docker.yml"
+    inputs:
+      active_target_pattern: $[[ inputs.active_target_pattern ]]
+      runner_tag_amd64: $[[ inputs.runner_tag_amd64 ]]
+      runner_tag_qemu: $[[ inputs.runner_tag_qemu ]]
+      runner_tag_arm64: $[[ inputs.runner_tag_arm64 ]]
   - local: "/.gitlab-ci.d/02-build.yml"
+    inputs:
+      runner_tag_amd64: $[[ inputs.runner_tag_amd64 ]]
+      runner_tag_qemu: $[[ inputs.runner_tag_qemu ]]
+      runner_tag_arm64: $[[ inputs.runner_tag_arm64 ]]
   - local: "/.gitlab-ci.d/03-test.yml"
+    inputs:
+      runner_tag_amd64: $[[ inputs.runner_tag_amd64 ]]
+      runner_tag_qemu: $[[ inputs.runner_tag_qemu ]]
+      runner_tag_arm64: $[[ inputs.runner_tag_arm64 ]]
   - local: "/.gitlab-ci.d/04-summary.yml"
+    inputs:
+      runner_tag_amd64: $[[ inputs.runner_tag_amd64 ]]
