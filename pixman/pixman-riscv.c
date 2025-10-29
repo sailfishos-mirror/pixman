@@ -30,6 +30,8 @@
 #ifdef USE_RVV
 
 #if defined(__linux__)
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
 #include <asm/hwprobe.h>
 #include <asm/unistd.h>
 #include <sys/syscall.h>
@@ -39,11 +41,20 @@ static int
 is_rvv_1_0_available ()
 {
     struct riscv_hwprobe pair = {RISCV_HWPROBE_KEY_IMA_EXT_0, 0};
+
+    // Check if it is possible to detect
     if (syscall (__NR_riscv_hwprobe, &pair, 1, 0, 0, 0) < 0)
     {
-	return 0;
+        return 0;
     }
-    return (pair.value & RISCV_HWPROBE_IMA_V);
+
+    // Check if it is allowed
+    if (getauxval (AT_HWCAP) & COMPAT_HWCAP_ISA_V)
+    {
+        return (pair.value & RISCV_HWPROBE_IMA_V);
+    }
+
+    return 0;
 }
 
 #endif

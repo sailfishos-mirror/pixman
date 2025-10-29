@@ -381,6 +381,10 @@ if not use_rvv.disabled()
         #if defined(__riscv_v) && __riscv_v < 1000000
         #error "Minimum supported RVV is 1.0"
         #endif
+        #include <asm/hwcap.h>
+        #ifndef COMPAT_HWCAP_ISA_V /* added in linux-6.5 */
+        #error "COMPAT_HWCAP_ISA_V is not available"
+        #endif
         #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0)
         #error "Minimum supported kernel is 6.5.0"
         #endif
