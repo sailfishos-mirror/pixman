@@ -507,6 +507,14 @@ foreach f : funcs
   endif
 endforeach
 
+if cc.has_function('getauxval', prefix : '#include <sys/auxv.h>')
+  config.set('HAVE_GETAUXVAL', 1)
+endif
+
+if cc.has_function('elf_aux_info', prefix : '#include <sys/auxv.h>')
+  config.set('HAVE_ELF_AUX_INFO', 1)
+endif
+
 # This is only used in one test, that defines _GNU_SOURCE
 if cc.has_function('feenableexcept',
                    prefix : '#define _GNU_SOURCE\n#include <fenv.h>',

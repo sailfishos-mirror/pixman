@@ -48,7 +48,30 @@ pixman_have_vmx (void)
     return have_vmx;
 }
 
+#elif defined (HAVE_ELF_AUX_INFO)
+
+#include <sys/auxv.h>
+#ifdef __FreeBSD__
+#include <machine/cpu.h>
+#endif
+
+static pixman_bool_t
+pixman_have_vmx (void)
+{
+    unsigned long cpufeatures = 0;
+    int error, have_vmx;
+
+    error = elf_aux_info (AT_HWCAP, &cpufeatures, sizeof(cpufeatures));
+
+    if (error != 0)
+        return FALSE;
+
+    have_vmx = cpufeatures & PPC_FEATURE_HAS_ALTIVEC;
+    return have_vmx;
+}
+
 #elif defined (__OpenBSD__)
+
 #include <sys/param.h>
 #include <sys/sysctl.h>
 #include <machine/cpu.h>
@@ -68,19 +91,17 @@ pixman_have_vmx (void)
     return have_vmx;
 }
 
-#elif defined (__FreeBSD__)
-#include <machine/cpu.h>
+#elif defined (HAVE_GETAUXVAL)
+
 #include <sys/auxv.h>
 
 static pixman_bool_t
 pixman_have_vmx (void)
 {
-
     unsigned long cpufeatures;
     int have_vmx;
 
-    if (elf_aux_info(AT_HWCAP, &cpufeatures, sizeof(cpufeatures)))
-    return FALSE;
+    cpufeatures = getauxval (AT_HWCAP);
 
     have_vmx = cpufeatures & PPC_FEATURE_HAS_ALTIVEC;
     return have_vmx;
