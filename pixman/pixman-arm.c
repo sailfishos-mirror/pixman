@@ -122,6 +122,55 @@ detect_cpu_features (void)
     return features;
 }
 
+#elif defined (HAVE_ELF_AUX_INFO)
+
+#include <sys/auxv.h>
+
+static arm_cpu_features_t
+detect_cpu_features (void)
+{
+    arm_cpu_features_t features = 0;
+    unsigned long hwcap = 0;
+
+    elf_aux_info (AT_HWCAP, &hwcap, sizeof(hwcap));
+
+    if (hwcap & HWCAP_VFP)
+        features |= ARM_VFP;
+    if (hwcap & HWCAP_NEON)
+        features |= ARM_NEON;
+
+    return features;
+}
+
+#elif defined (HAVE_GETAUXAL)
+
+#include <sys/auxv.h>
+#include <string.h>
+
+static arm_cpu_features_t
+detect_cpu_features (void)
+{
+    arm_cpu_features_t features = 0;
+    unsigned long hwcap;
+    const char *plat;
+
+    hwcap = getauxval (AT_HWCAP);
+
+    if (hwcap & HWCAP_ARM_VFP)
+        features |= ARM_VFP;
+    if (hwcap & HWCAP_ARM_NEON)
+        features |= ARM_NEON;
+
+    plat = (const char *) getauxval (AT_PLATFORM);
+
+    if (strncmp (plat, "v7l", 3) == 0)
+        features |= (ARM_V7 | ARM_V6);
+    else if (strncmp (plat, "v6l", 3) == 0)
+        features |= ARM_V6;
+
+    return features;
+}
+
 #elif defined (__linux__) /* linux ELF */
 
 #include <unistd.h>
