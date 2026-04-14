@@ -29,7 +29,7 @@
 
 #ifdef USE_RVV
 
-#if defined(__linux__)
+#if defined(HAVE_RVV_LINUX)
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
 #include <asm/hwprobe.h>
@@ -69,7 +69,7 @@ detect_cpu_features (void)
 {
     riscv_cpu_features_t features = 0;
 
-#if defined(__linux__)
+#if defined(HAVE_RVV_LINUX)
     if (is_rvv_1_0_available ())
     {
 	features |= RVV;

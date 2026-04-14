@@ -372,28 +372,15 @@ if not use_rvv.disabled()
   if host_machine.cpu_family() == 'riscv64'
     if cc.compiles('''
         #include <riscv_vector.h>
-        #include <asm/hwprobe.h>
-        #include <linux/version.h>
-        #include <sys/syscall.h>
-        #include <asm/unistd.h>
-        #include <unistd.h>
 
         #if defined(__riscv_v) && __riscv_v < 1000000
         #error "Minimum supported RVV is 1.0"
         #endif
-        #include <asm/hwcap.h>
-        #ifndef COMPAT_HWCAP_ISA_V /* added in linux-6.5 */
-        #error "COMPAT_HWCAP_ISA_V is not available"
-        #endif
-        #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 5, 0)
-        #error "Minimum supported kernel is 6.5.0"
-        #endif
 
         int main() {
-            struct riscv_hwprobe pair = {RISCV_HWPROBE_KEY_IMA_EXT_0, 0};
-            long result = syscall (__NR_riscv_hwprobe, &pair, 1, 0, 0, 0);
-            vfloat32m1_t tmp1; /* added in gcc-13 */
-            vfloat32m1x4_t tmp2; /* added in gcc-14 */
+            vfloat32m1_t da2, dr2, dg2, db2;
+            /* ensure GCC 14 / Clang 18 */
+            __riscv_vcreate_v_f32m1x4 (da2, dr2, dg2, db2);
             return 0;
         }
       ''',
@@ -583,6 +570,29 @@ endif
 
 if cc.has_function('clz')
   config.set('HAVE_BUILTIN_CLZ', 1)
+endif
+
+if host_machine.system() == 'linux' and host_machine.cpu_family() == 'riscv64'
+  if cc.links('''
+      #include <asm/hwcap.h>
+      #include <asm/hwprobe.h>
+      #include <sys/syscall.h>
+      #include <asm/unistd.h>
+      #include <unistd.h>
+
+      #ifndef COMPAT_HWCAP_ISA_V /* added in linux-6.5 */
+      #error "COMPAT_HWCAP_ISA_V is not available"
+      #endif
+
+      int main() {
+          struct riscv_hwprobe pair = {RISCV_HWPROBE_KEY_IMA_EXT_0, 0};
+          long result = syscall (__NR_riscv_hwprobe, &pair, 1, 0, 0, 0);
+          return 0;
+      }
+      ''',
+      name : 'Linux appropriate for RVV')
+    config.set('HAVE_RVV_LINUX', 1)
+  endif
 endif
 
 if cc.links('''
