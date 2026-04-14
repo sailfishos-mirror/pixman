@@ -725,13 +725,13 @@ fetch_scanline_a16b16g16r16_float (bits_image_t *  image,
 
     while (pixel < end)
     {
-	uint64_t p;
+	uint64_t a, r, g, b, p;
 
 	memcpy(&p, pixel++, sizeof(p));
-	uint64_t a = (p >> 48) & 0xffff;
-	uint64_t b = (p >> 32) & 0xffff;
-	uint64_t g = (p >> 16) & 0xffff;
-	uint64_t r = (p >> 0) & 0xffff;
+	a = (p >> 48) & 0xffff;
+	b = (p >> 32) & 0xffff;
+	g = (p >> 16) & 0xffff;
+	r = (p >> 0) & 0xffff;
 
 	buffer->a = pixman_unorm_to_float (a, 16);
 	buffer->r = pixman_unorm_to_float (r, 16);
@@ -945,13 +945,14 @@ fetch_pixel_a16b16g16r16_float (bits_image_t *image,
 				int           line)
 {
     uint64_t *bits = (uint64_t *)(image->bits + line * image->rowstride);
-    uint64_t p;
-    memcpy(&p, bits + offset, sizeof(p));
-    uint64_t a = (p >> 48) & 0xffff;
-    uint64_t b = (p >> 32) & 0xffff;
-    uint64_t g = (p >> 16) & 0xffff;
-    uint64_t r = (p >> 0)  & 0xffff;
+    uint64_t a, r, g, b, p;
     argb_t argb;
+
+    memcpy(&p, bits + offset, sizeof(p));
+    a = (p >> 48) & 0xffff;
+    b = (p >> 32) & 0xffff;
+    g = (p >> 16) & 0xffff;
+    r = (p >> 0)  & 0xffff;
 
     argb.a = pixman_unorm_to_float (a, 16);
     argb.r = pixman_unorm_to_float (r, 16);
@@ -1189,14 +1190,14 @@ store_scanline_a16b16g16r16_float (bits_image_t *  image,
 
     for (i = 0; i < width; ++i)
     {
-	uint64_t a, r, g, b;
+	uint64_t a, r, g, b, p;
 
 	a = pixman_float_to_unorm (values[i].a, 16);
 	r = pixman_float_to_unorm (values[i].r, 16);
 	g = pixman_float_to_unorm (values[i].g, 16);
 	b = pixman_float_to_unorm (values[i].b, 16);
 
-	uint64_t p = (a << 48) | (b << 32) | (g << 16) | (r << 0) ;
+	p = (a << 48) | (b << 32) | (g << 16) | (r << 0) ;
 	memcpy(pixel++, &p, sizeof(uint64_t));
     }
 }
