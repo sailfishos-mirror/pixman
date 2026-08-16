@@ -655,6 +655,11 @@ pixman_implementation_t *
 _pixman_implementation_create_vmx (pixman_implementation_t *fallback);
 #endif
 
+#ifdef USE_POWER8
+pixman_implementation_t *
+_pixman_implementation_create_power8 (pixman_implementation_t *fallback);
+#endif
+
 #ifdef USE_RVV
 pixman_implementation_t *
 _pixman_implementation_create_rvv (pixman_implementation_t *fallback);

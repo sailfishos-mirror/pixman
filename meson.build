@@ -295,6 +295,41 @@ elif use_vmx.enabled()
   error('vmx Support unavailable, but required')
 endif
 
+use_power8 = get_option('power8')
+have_power8 = false
+power8_flags = ['-mcpu=power8']
+if not use_power8.disabled()
+  if host_machine.cpu_family().startswith('ppc')
+    if cc.compiles('''
+        #ifndef _ARCH_PWR8
+        #error "no ISA 2.07"
+        #endif
+        #include <altivec.h>
+        int main (int argc, char **argv) {
+            /* The intrinsics the recompiled VMX code uses on its
+             * __VSX__ paths. */
+            vector unsigned long long w =
+                vec_splats ((unsigned long long) argc);
+            vector unsigned int v =
+                vec_xl (0, (const unsigned int *) argv);
+            w = vec_insert (vec_extract (w, 0), w, 1);
+            vec_xst ((vector unsigned char) w, 0,
+                     (unsigned char *) argv[0]);
+            return vec_extract (v, 0);
+        }''',
+        args : power8_flags,
+        name : 'POWER8/ISA 2.07 Intrinsic Support')
+      have_power8 = true
+    endif
+  endif
+endif
+
+if have_power8
+  config.set10('USE_POWER8', true)
+elif use_power8.enabled()
+  error('power8 Support unavailable, but required')
+endif
+
 use_armv6_simd = get_option('arm-simd')
 have_armv6_simd = false
 if not use_armv6_simd.disabled()

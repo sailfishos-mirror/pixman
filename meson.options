@@ -44,6 +44,11 @@ option(
   description : 'Use PPC VMX/Altivec intrinsic optimized paths',
 )
 option(
+  'power8',
+  type : 'feature',
+  description : 'Use PPC POWER8/ISA 2.07 recompiled paths',
+)
+option(
   'arm-simd',
   type : 'feature',
   description : 'Use ARMv6 SIMD intrinsic optimized paths',

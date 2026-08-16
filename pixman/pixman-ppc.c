@@ -182,9 +182,120 @@ pixman_have_vmx (void)
 #endif /* __APPLE__ */
 #endif /* USE_VMX */
 
+#ifdef USE_POWER8
+
+/* Define the PPC AT_HWCAP2 feature flags in case the libc or kernel
+ * headers do not.
+ */
+#if defined (HAVE_GETAUXVAL) || defined (__linux__)
+#ifndef PPC_FEATURE2_ARCH_2_07
+#define PPC_FEATURE2_ARCH_2_07 0x80000000
+#endif
+
+#ifndef AT_HWCAP2
+#define AT_HWCAP2 26
+#endif
+#endif
+
+#if defined (HAVE_ELF_AUX_INFO)
+
+#include <sys/auxv.h>
+#ifdef __FreeBSD__
+#include <machine/cpu.h>
+#endif
+
+static pixman_bool_t
+pixman_have_power8 (void)
+{
+    unsigned long cpufeatures = 0;
+    int error;
+
+    error = elf_aux_info (AT_HWCAP2, &cpufeatures, sizeof(cpufeatures));
+
+    if (error != 0)
+	return FALSE;
+
+    return !!(cpufeatures & PPC_FEATURE2_ARCH_2_07);
+}
+
+#elif defined (HAVE_GETAUXVAL)
+
+#include <sys/auxv.h>
+
+static pixman_bool_t
+pixman_have_power8 (void)
+{
+    unsigned long cpufeatures = getauxval (AT_HWCAP2);
+
+    return !!(cpufeatures & PPC_FEATURE2_ARCH_2_07);
+}
+
+#elif defined (__linux__)
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <linux/auxvec.h>
+
+static pixman_bool_t
+pixman_have_power8 (void)
+{
+    int have_power8 = FALSE;
+    int fd;
+    struct
+    {
+	unsigned long type;
+	unsigned long value;
+    } aux;
+
+    fd = open ("/proc/self/auxv", O_RDONLY);
+    if (fd >= 0)
+    {
+	while (read (fd, &aux, sizeof (aux)) == sizeof (aux))
+	{
+	    if (aux.type == AT_HWCAP2 && (aux.value & PPC_FEATURE2_ARCH_2_07))
+	    {
+		have_power8 = TRUE;
+		break;
+	    }
+	}
+
+	close (fd);
+    }
+
+    return have_power8;
+}
+
+#else /* !HAVE_ELF_AUX_INFO && !HAVE_GETAUXVAL && !__linux__ */
+
+/* No machine running Mac OS X has ISA 2.07, and there is no reliable
+ * way to detect it elsewhere without the ELF auxiliary vector, so
+ * conservatively report it as unavailable.
+ */
+static pixman_bool_t
+pixman_have_power8 (void)
+{
+    return FALSE;
+}
+
+#endif
+#endif /* USE_POWER8 */
+
 pixman_implementation_t *
 _pixman_ppc_get_implementations (pixman_implementation_t *imp)
 {
+    /* The POWER8 implementation is a recompilation of the VMX one, so
+     * it completely replaces it when selected, and disabling "vmx"
+     * disables it as well.
+     */
+#ifdef USE_POWER8
+    if (!_pixman_disabled ("power8") && !_pixman_disabled ("vmx") &&
+	pixman_have_power8 ())
+	return _pixman_implementation_create_power8 (imp);
+#endif
+
 #ifdef USE_VMX
     if (!_pixman_disabled ("vmx") && pixman_have_vmx ())
 	imp = _pixman_implementation_create_vmx (imp);
