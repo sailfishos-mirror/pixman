@@ -182,19 +182,25 @@ pixman_have_vmx (void)
 #endif /* __APPLE__ */
 #endif /* USE_VMX */
 
-#ifdef USE_POWER8
+#if defined(USE_POWER8) || defined(USE_POWER9)
+#define USE_PPC_HWCAP2
+#endif
+
+#ifdef USE_PPC_HWCAP2
 
 /* Define the PPC AT_HWCAP2 feature flags in case the libc or kernel
  * headers do not.
  */
-#if defined (HAVE_GETAUXVAL) || defined (__linux__)
 #ifndef PPC_FEATURE2_ARCH_2_07
 #define PPC_FEATURE2_ARCH_2_07 0x80000000
 #endif
 
+#ifndef PPC_FEATURE2_ARCH_3_00
+#define PPC_FEATURE2_ARCH_3_00 0x00800000
+#endif
+
 #ifndef AT_HWCAP2
 #define AT_HWCAP2 26
-#endif
 #endif
 
 #if defined (HAVE_ELF_AUX_INFO)
@@ -204,30 +210,25 @@ pixman_have_vmx (void)
 #include <machine/cpu.h>
 #endif
 
-static pixman_bool_t
-pixman_have_power8 (void)
+static unsigned long
+pixman_hwcap2 (void)
 {
     unsigned long cpufeatures = 0;
-    int error;
 
-    error = elf_aux_info (AT_HWCAP2, &cpufeatures, sizeof(cpufeatures));
+    if (elf_aux_info (AT_HWCAP2, &cpufeatures, sizeof(cpufeatures)) != 0)
+	return 0;
 
-    if (error != 0)
-	return FALSE;
-
-    return !!(cpufeatures & PPC_FEATURE2_ARCH_2_07);
+    return cpufeatures;
 }
 
 #elif defined (HAVE_GETAUXVAL)
 
 #include <sys/auxv.h>
 
-static pixman_bool_t
-pixman_have_power8 (void)
+static unsigned long
+pixman_hwcap2 (void)
 {
-    unsigned long cpufeatures = getauxval (AT_HWCAP2);
-
-    return !!(cpufeatures & PPC_FEATURE2_ARCH_2_07);
+    return getauxval (AT_HWCAP2);
 }
 
 #elif defined (__linux__)
@@ -239,10 +240,10 @@ pixman_have_power8 (void)
 #include <stdio.h>
 #include <linux/auxvec.h>
 
-static pixman_bool_t
-pixman_have_power8 (void)
+static unsigned long
+pixman_hwcap2 (void)
 {
-    int have_power8 = FALSE;
+    unsigned long hwcap2 = 0;
     int fd;
     struct
     {
@@ -255,9 +256,9 @@ pixman_have_power8 (void)
     {
 	while (read (fd, &aux, sizeof (aux)) == sizeof (aux))
 	{
-	    if (aux.type == AT_HWCAP2 && (aux.value & PPC_FEATURE2_ARCH_2_07))
+	    if (aux.type == AT_HWCAP2)
 	    {
-		have_power8 = TRUE;
+		hwcap2 = aux.value;
 		break;
 	    }
 	}
@@ -265,36 +266,46 @@ pixman_have_power8 (void)
 	close (fd);
     }
 
-    return have_power8;
+    return hwcap2;
 }
 
 #else /* !HAVE_ELF_AUX_INFO && !HAVE_GETAUXVAL && !__linux__ */
 
 /* No machine running Mac OS X has ISA 2.07, and there is no reliable
- * way to detect it elsewhere without the ELF auxiliary vector, so
- * conservatively report it as unavailable.
+ * way to read AT_HWCAP2 elsewhere without the ELF auxiliary vector,
+ * so conservatively report no features.
  */
-static pixman_bool_t
-pixman_have_power8 (void)
+static unsigned long
+pixman_hwcap2 (void)
 {
-    return FALSE;
+    return 0;
 }
 
 #endif
-#endif /* USE_POWER8 */
+#endif /* USE_PPC_HWCAP2 */
 
 pixman_implementation_t *
 _pixman_ppc_get_implementations (pixman_implementation_t *imp)
 {
-    /* The POWER8 implementation is a recompilation of the VMX one, so
-     * it completely replaces it when selected, and disabling "vmx"
-     * disables it as well.
+    /* The POWER9 and POWER8 implementations are recompilations of the
+     * VMX one, so whichever is selected completely replaces it, and
+     * disabling "vmx" disables them as well.
      */
+#ifdef USE_PPC_HWCAP2
+    unsigned long hwcap2 = pixman_hwcap2 ();
+
+#ifdef USE_POWER9
+    if (!_pixman_disabled ("power9") && !_pixman_disabled ("vmx") &&
+	(hwcap2 & PPC_FEATURE2_ARCH_3_00))
+	return _pixman_implementation_create_power9 (imp);
+#endif
+
 #ifdef USE_POWER8
     if (!_pixman_disabled ("power8") && !_pixman_disabled ("vmx") &&
-	pixman_have_power8 ())
+	(hwcap2 & PPC_FEATURE2_ARCH_2_07))
 	return _pixman_implementation_create_power8 (imp);
 #endif
+#endif /* USE_PPC_HWCAP2 */
 
 #ifdef USE_VMX
     if (!_pixman_disabled ("vmx") && pixman_have_vmx ())

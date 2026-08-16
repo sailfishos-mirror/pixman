@@ -330,6 +330,41 @@ elif use_power8.enabled()
   error('power8 Support unavailable, but required')
 endif
 
+use_power9 = get_option('power9')
+have_power9 = false
+power9_flags = ['-mcpu=power9']
+if not use_power9.disabled()
+  if host_machine.cpu_family().startswith('ppc')
+    if cc.compiles('''
+        #ifndef _ARCH_PWR9
+        #error "no ISA 3.0"
+        #endif
+        #include <altivec.h>
+        int main (int argc, char **argv) {
+            /* The intrinsics the recompiled VMX code uses on its
+             * __VSX__ paths. */
+            vector unsigned long long w =
+                vec_splats ((unsigned long long) argc);
+            vector unsigned int v =
+                vec_xl (0, (const unsigned int *) argv);
+            w = vec_insert (vec_extract (w, 0), w, 1);
+            vec_xst ((vector unsigned char) w, 0,
+                     (unsigned char *) argv[0]);
+            return vec_extract (v, 0);
+        }''',
+        args : power9_flags,
+        name : 'POWER9/ISA 3.0 Intrinsic Support')
+      have_power9 = true
+    endif
+  endif
+endif
+
+if have_power9
+  config.set10('USE_POWER9', true)
+elif use_power9.enabled()
+  error('power9 Support unavailable, but required')
+endif
+
 use_armv6_simd = get_option('arm-simd')
 have_armv6_simd = false
 if not use_armv6_simd.disabled()

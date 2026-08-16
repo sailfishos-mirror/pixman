@@ -50,6 +50,7 @@ simds = [
   ['ssse3', have_ssse3, ssse3_flags, []],
   ['vmx', have_vmx, vmx_flags, []],
   ['power8', have_power8, power8_flags, []],
+  ['power9', have_power9, power9_flags, []],
   ['arm-simd', have_armv6_simd, [],
    ['pixman-arm-simd-asm.S', 'pixman-arm-simd-asm-scaled.S']],
   ['arm-neon', have_neon, [],
