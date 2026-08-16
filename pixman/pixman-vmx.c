@@ -32,6 +32,8 @@
 #include "pixman-inlines.h"
 #include "pixman-private.h"
 #include <altivec.h>
+#include <stdlib.h>
+#include <string.h>
 
 static const vector unsigned char vzero = (const vector unsigned char){0};
 static vector unsigned char       mask_ff000000;
@@ -270,6 +272,97 @@ static force_inline void
 save_128_aligned (uint32_t *data, vector unsigned char vdata)
 {
     STORE_VECTOR (data)
+}
+
+/* On little endian, a single lvx/stvx family access in a loop makes
+ * gcc's swap optimization pass give up on the whole loop, after which
+ * every vector constant in it is spilled to the stack and reloaded on
+ * each iteration.  The helpers below therefore keep the VSX paths free
+ * of vec_ld/vec_st and of vector literals built from runtime scalars.
+ */
+
+/* load 16 bytes from a 16-byte aligned address */
+static force_inline vector unsigned char
+load_u8x16_aligned (const void *p)
+{
+#ifdef __VSX__
+    return vec_xl (0, (const unsigned char *) p);
+#else
+    return vec_ld (0, (const unsigned char *) p);
+#endif
+}
+
+/* store 16 bytes to a 16-byte aligned address */
+static force_inline void
+store_u8x16_aligned (vector unsigned char v, void *p)
+{
+#ifdef __VSX__
+    vec_xst (v, 0, (unsigned char *) p);
+#else
+    vec_st (v, 0, (unsigned char *) p);
+#endif
+}
+
+/* store 16 bytes to a (possibly unaligned) address */
+static force_inline void
+store_u8x16 (vector unsigned char v, void *p)
+{
+#ifdef __VSX__
+    vec_xst (v, 0, (unsigned char *) p);
+#else
+    unsigned char buf[16] __attribute__((aligned (16)));
+
+    vec_st (v, 0, buf);
+    memcpy (p, buf, 16);
+#endif
+}
+
+/* build { lo, lo, lo, lo, hi, hi, hi, hi } */
+static force_inline vector unsigned short
+splat_u16_lo_hi (unsigned short lo, unsigned short hi)
+{
+#ifdef __VSX__
+    return (vector unsigned short) vec_mergeh (
+	(vector unsigned long long) vec_splats (lo),
+	(vector unsigned long long) vec_splats (hi));
+#else
+    return (vector unsigned short){ lo, lo, lo, lo, hi, hi, hi, hi };
+#endif
+}
+
+/* pack two 64-bit values into one vector, with p0 in the first
+ * eight bytes in memory order
+ */
+static force_inline vector unsigned char
+pack_u64x2 (uint64_t p0, uint64_t p1)
+{
+#ifdef __VSX__
+    vector unsigned long long v = vec_splats ((unsigned long long) p0);
+
+    return (vector unsigned char) vec_insert ((unsigned long long) p1, v, 1);
+#else
+    uint64_t buf[2] __attribute__((aligned (16))) = { p0, p1 };
+
+    return vec_ld (0, (const unsigned char *) buf);
+#endif
+}
+
+/* extract the first eight bytes, in memory order, as a 64-bit value */
+static force_inline uint64_t
+extract_u64 (vector unsigned char v)
+{
+#ifdef __VSX__
+    return vec_extract ((vector unsigned long long) v, 0);
+#else
+    /* vec_extract cannot be used here, as vectors with 64-bit
+     * elements are themselves a VSX feature.
+     */
+    uint64_t buf[2] __attribute__((aligned (16)));
+
+    vec_st (v, 0, (unsigned char *) buf);
+
+    return buf[0];
+#endif
 }
 
 static force_inline int
@@ -2905,6 +2998,271 @@ vmx_fetch_a8 (pixman_iter_t *iter, const uint32_t *mask)
     return iter->buffer;
 }
 
+typedef struct
+{
+    int       y;
+    uint64_t *buffer;
+} line_t;
+
+typedef struct
+{
+    line_t         lines[2];
+    pixman_fixed_t y;
+    pixman_fixed_t x;
+    uint64_t       data[1];
+} bilinear_info_t;
+
+/* The horizontal pass expands each a8r8g8b8 pixel pair into 8 unsigned
+ * 16 bit channel values scaled by (1 << BILINEAR_INTERPOLATION_BITS),
+ * stored in image memory channel order, one uint64_t per output pixel.
+ */
+static void
+vmx_fetch_horizontal (bits_image_t *image, line_t *line,
+		      int y, pixman_fixed_t x, pixman_fixed_t ux, int n)
+{
+    const uint32_t *bits = image->bits + y * image->rowstride;
+    uint64_t *b = line->buffer;
+
+    const vector unsigned short vzero16 = (vector unsigned short) vzero;
+    const vector unsigned short vmax =
+	create_mask_16_128 (1 << BILINEAR_INTERPOLATION_BITS);
+    const vector unsigned short vshift =
+	create_mask_16_128 (16 - BILINEAR_INTERPOLATION_BITS);
+
+    /* Select the left/right source pixel bytes of two pixel pairs,
+     * zero extended to 16 bit channels.  The pairs are laid out in the
+     * vector as l0 r0 l1 r1, four bytes each, in image memory order.
+     */
+#ifdef WORDS_BIGENDIAN
+    const vector unsigned char sel_l = (vector unsigned char){
+	0x10, 0x00, 0x10, 0x01, 0x10, 0x02, 0x10, 0x03,
+	0x10, 0x08, 0x10, 0x09, 0x10, 0x0A, 0x10, 0x0B,
+    };
+    const vector unsigned char sel_r = (vector unsigned char){
+	0x10, 0x04, 0x10, 0x05, 0x10, 0x06, 0x10, 0x07,
+	0x10, 0x0C, 0x10, 0x0D, 0x10, 0x0E, 0x10, 0x0F,
+    };
+#else
+    const vector unsigned char sel_l = (vector unsigned char){
+	0x00, 0x10, 0x01, 0x10, 0x02, 0x10, 0x03, 0x10,
+	0x08, 0x10, 0x09, 0x10, 0x0A, 0x10, 0x0B, 0x10,
+    };
+    const vector unsigned char sel_r = (vector unsigned char){
+	0x04, 0x10, 0x05, 0x10, 0x06, 0x10, 0x07, 0x10,
+	0x0C, 0x10, 0x0D, 0x10, 0x0E, 0x10, 0x0F, 0x10,
+    };
+#endif
+
+    /* Lanes 0-3 track the position of the even output pixel, lanes 4-7
+     * the odd one.  Only the fractional part survives the truncation
+     * to 16 bits, which is all the weight computation needs.
+     */
+    vector unsigned short vx = splat_u16_lo_hi (x, x + ux);
+    const vector unsigned short vux =
+	create_mask_16_128 ((unsigned short)(2 * ux));
+
+    uint64_t p0, p1;
+
+    while ((n -= 2) >= 0)
+    {
+	memcpy (&p1, bits + pixman_fixed_to_int (x + ux), sizeof p1);
+
+    final_pixel:
+	memcpy (&p0, bits + pixman_fixed_to_int (x), sizeof p0);
+	x += 2 * ux;
+
+	{
+	    vector unsigned char vpc = pack_u64x2 (p0, p1);
+	    vector unsigned short vl, vr, vw, viw, vout;
+
+	    vl = (vector unsigned short) vec_perm (vpc, vzero, sel_l);
+	    vr = (vector unsigned short) vec_perm (vpc, vzero, sel_r);
+
+	    vw = vec_sr (vx, vshift);
+	    viw = vec_sub (vmax, vw);
+	    vx = vec_add (vx, vux);
+
+	    vout = vec_mladd (vl, viw, vec_mladd (vr, vw, vzero16));
+
+	    store_u8x16_aligned ((vector unsigned char) vout, b);
+	    b += 2;
+	}
+    }
+
+    if (n == -1)
+    {
+	p1 = 0;
+	goto final_pixel;
+    }
+
+    line->y = y;
+}
+
+static uint32_t *
+vmx_fetch_bilinear_cover (pixman_iter_t *iter, const uint32_t *mask)
+{
+    pixman_fixed_t fx, ux;
+    bilinear_info_t *info = iter->data;
+    line_t *line0, *line1;
+    int y0, y1;
+    int32_t dist_y;
+    int i;
+
+    vector unsigned short vw;
+    const vector unsigned int vzero32 = (vector unsigned int) vzero;
+    const vector unsigned int vshift =
+	create_mask_32_128 (2 * BILINEAR_INTERPOLATION_BITS);
+
+    fx = info->x;
+    ux = iter->image->common.transform->matrix[0][0];
+
+    y0 = pixman_fixed_to_int (info->y);
+    y1 = y0 + 1;
+
+    line0 = &info->lines[y0 & 0x01];
+    line1 = &info->lines[y1 & 0x01];
+
+    if (line0->y != y0)
+    {
+	vmx_fetch_horizontal (
+	    &iter->image->bits, line0, y0, fx, ux, iter->width);
+    }
+
+    if (line1->y != y1)
+    {
+	vmx_fetch_horizontal (
+	    &iter->image->bits, line1, y1, fx, ux, iter->width);
+    }
+
+    dist_y = pixman_fixed_to_bilinear_weight (info->y);
+
+    /* Interleave the top and bottom line weights so that vec_msum can
+     * sum each top/bottom channel pair into a 32 bit lane in one go.
+     */
+    vw = vec_mergeh (
+	create_mask_16_128 ((1 << BILINEAR_INTERPOLATION_BITS) - dist_y),
+	create_mask_16_128 (dist_y));
+
+#define INTERPOLATE_2_PIXELS(t, b)                                             \
+    vec_pack (                                                                 \
+	vec_sr (vec_msum (vec_mergeh ((t), (b)), vw, vzero32), vshift),        \
+	vec_sr (vec_msum (vec_mergel ((t), (b)), vw, vzero32), vshift))
+
+    for (i = 0; i + 3 < iter->width; i += 4)
+    {
+	vector unsigned short vt0 = (vector unsigned short)
+	    load_u8x16_aligned (line0->buffer + i);
+	vector unsigned short vb0 = (vector unsigned short)
+	    load_u8x16_aligned (line1->buffer + i);
+	vector unsigned short vt1 = (vector unsigned short)
+	    load_u8x16_aligned (line0->buffer + i + 2);
+	vector unsigned short vb1 = (vector unsigned short)
+	    load_u8x16_aligned (line1->buffer + i + 2);
+
+	vector unsigned char vout = vec_packsu (
+	    INTERPOLATE_2_PIXELS (vt0, vb0),
+	    INTERPOLATE_2_PIXELS (vt1, vb1));
+
+	store_u8x16 (vout, iter->buffer + i);
+    }
+
+    while (i < iter->width)
+    {
+	/* The line buffers have enough slack to read 16 bytes here
+	 * even when only one pixel is left (see the allocation in
+	 * vmx_bilinear_cover_iter_init).  buffer + i is still 16-byte
+	 * aligned: i enters this loop a multiple of 4, and only the
+	 * two-pixel case below loops.
+	 */
+	vector unsigned short vt0 = (vector unsigned short)
+	    load_u8x16_aligned (line0->buffer + i);
+	vector unsigned short vb0 = (vector unsigned short)
+	    load_u8x16_aligned (line1->buffer + i);
+
+	vector unsigned short vpx = INTERPOLATE_2_PIXELS (vt0, vb0);
+	vector unsigned char vout = vec_packsu (vpx, vpx);
+
+	if (iter->width - i == 1)
+	{
+	    iter->buffer[i] = vec_extract ((vector unsigned int) vout, 0);
+	    i++;
+	}
+	else
+	{
+	    uint64_t p = extract_u64 (vout);
+
+	    memcpy (iter->buffer + i, &p, sizeof p);
+	    i += 2;
+	}
+    }
+
+#undef INTERPOLATE_2_PIXELS
+
+    info->y += iter->image->common.transform->matrix[1][1];
+
+    return iter->buffer;
+}
+
+static void
+vmx_bilinear_cover_iter_fini (pixman_iter_t *iter)
+{
+    free (iter->data);
+}
+
+static void
+vmx_bilinear_cover_iter_init (pixman_iter_t            *iter,
+			      const pixman_iter_info_t *iter_info)
+{
+    int width = iter->width;
+    bilinear_info_t *info;
+    pixman_vector_t v;
+
+    /* Reference point is the center of the pixel */
+    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
+    v.vector[1] = pixman_int_to_fixed (iter->y) + pixman_fixed_1 / 2;
+    v.vector[2] = pixman_fixed_1;
+
+    if (!pixman_transform_point_3d (iter->image->common.transform, &v))
+	goto fail;
+
+    info = malloc (sizeof (*info) + (2 * width - 1) * sizeof (uint64_t) + 64);
+    if (!info)
+	goto fail;
+
+    info->x = v.vector[0] - pixman_fixed_1 / 2;
+    info->y = v.vector[1] - pixman_fixed_1 / 2;
+
+#define ALIGN(addr)							\
+    ((void *)((((uintptr_t)(addr)) + 15) & (~15)))
+
+    /* It is safe to set the y coordinates to -1 initially
+     * because COVER_CLIP_BILINEAR ensures that we will only
+     * be asked to fetch lines in the [0, height) interval
+     */
+    info->lines[0].y = -1;
+    info->lines[0].buffer = ALIGN (&(info->data[0]));
+    info->lines[1].y = -1;
+    info->lines[1].buffer = ALIGN (info->lines[0].buffer + width);
+
+#undef ALIGN
+
+    iter->get_scanline = vmx_fetch_bilinear_cover;
+    iter->fini = vmx_bilinear_cover_iter_fini;
+
+    iter->data = info;
+    return;
+
+fail:
+    /* Something went wrong, either a bad matrix or OOM; in such cases,
+     * we don't guarantee any particular rendering.
+     */
+    _pixman_log_error (
+	FUNC, "Allocation failure or bad matrix, skipping rendering\n");
+
+    iter->get_scanline = _pixman_iter_get_scanline_noop;
+    iter->fini = NULL;
+}
+
 #define IMAGE_FLAGS                                                            \
     (FAST_PATH_STANDARD_FLAGS | FAST_PATH_ID_TRANSFORM |                       \
      FAST_PATH_BITS_IMAGE | FAST_PATH_SAMPLES_COVER_CLIP_NEAREST)
@@ -2912,6 +3270,14 @@ vmx_fetch_a8 (pixman_iter_t *iter, const uint32_t *mask)
 /* clang-format off */
 static const pixman_iter_info_t vmx_iters[] =
 {
+    { PIXMAN_a8r8g8b8,
+      (FAST_PATH_STANDARD_FLAGS		|
+       FAST_PATH_SCALE_TRANSFORM	|
+       FAST_PATH_BILINEAR_FILTER	|
+       FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
+      ITER_NARROW | ITER_SRC,
+      vmx_bilinear_cover_iter_init, NULL, NULL
+    },
     { PIXMAN_x8r8g8b8, IMAGE_FLAGS, ITER_NARROW,
       _pixman_iter_init_bits_stride, vmx_fetch_x8r8g8b8, NULL
     },

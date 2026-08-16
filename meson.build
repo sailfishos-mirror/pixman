@@ -235,11 +235,17 @@ if not use_vmx.disabled()
             vector unsigned int v = vec_splat_u32 (1);
             v = vec_sub (v, v);
         #ifdef __VSX__
-            /* When VSX is enabled in CFLAGS, the VMX code uses VSX
-             * unaligned loads, which need GCC >= 7. */
+            /* When VSX is enabled in CFLAGS, the VMX code also uses
+             * VSX unaligned loads and stores and 64-bit vector element
+             * operations, which need GCC >= 7. */
+            vector unsigned long long w =
+                vec_splats ((unsigned long long) argc);
+            w = vec_insert (vec_extract (w, 0), w, 1);
             v = vec_add (v, vec_xl (0, (const unsigned int *) argv));
+            vec_xst ((vector unsigned char) w, 0,
+                     (unsigned char *) argv[0]);
         #endif
-            return 0;
+            return vec_extract (v, 0);
         }''',
         args : vmx_flags,
         name : 'VMX/Altivec Intrinsic Support')
