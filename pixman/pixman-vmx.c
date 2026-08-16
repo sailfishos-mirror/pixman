@@ -175,7 +175,7 @@ in_over (vector unsigned char src,
     return over (pix_multiply (src, mask), pix_multiply (srca, mask), dest);
 }
 
-#ifdef WORDS_BIGENDIAN
+#if defined(WORDS_BIGENDIAN) && !defined(__VSX__)
 
 #define COMPUTE_SHIFT_MASK(source) source##_mask = vec_lvsl (0, source);
 
@@ -214,9 +214,9 @@ in_over (vector unsigned char src,
 #else
 
 /* Now the COMPUTE_SHIFT_{MASK, MASKS, MASKC} below are just no-op.
- * They are defined that way because little endian altivec can do unaligned
- * reads natively and have no need for constructing the permutation pattern
- * variables.
+ * They are defined that way because VSX can do unaligned reads
+ * natively (and little endian PowerPC implies VSX), so there is no
+ * need for constructing the permutation pattern variables.
  */
 #define COMPUTE_SHIFT_MASK(source)
 
@@ -237,7 +237,7 @@ in_over (vector unsigned char src,
 #define DECLARE_SRC_MASK_VAR
 #define DECLARE_MASK_MASK_VAR
 
-#endif /* WORDS_BIGENDIAN */
+#endif /* WORDS_BIGENDIAN && !__VSX__ */
 
 #define LOAD_VECTORSM(dest, source, mask)                                      \
     LOAD_VECTORSC (dest, source, mask);                                        \

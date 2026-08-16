@@ -231,9 +231,14 @@ if not use_vmx.disabled()
   if host_machine.cpu_family().startswith('ppc')
     if cc.compiles('''
         #include <altivec.h>
-        int main () {
+        int main (int argc, char **argv) {
             vector unsigned int v = vec_splat_u32 (1);
             v = vec_sub (v, v);
+        #ifdef __VSX__
+            /* When VSX is enabled in CFLAGS, the VMX code uses VSX
+             * unaligned loads, which need GCC >= 7. */
+            v = vec_add (v, vec_xl (0, (const unsigned int *) argv));
+        #endif
             return 0;
         }''',
         args : vmx_flags,
