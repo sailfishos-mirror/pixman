@@ -3019,6 +3019,36 @@ rvv_blt (pixman_implementation_t *__restrict__ imp,
     return TRUE;
 }
 
+static uint32_t *
+rvv_fetch_r5g6b5 (pixman_iter_t *iter, const uint32_t *mask)
+{
+    int32_t         w   = iter->width;
+    uint32_t       *dst = iter->buffer;
+    const uint16_t *src = (const uint16_t *)iter->bits;
+
+    iter->bits += iter->stride;
+
+    RVV_FOREACH_2 (w, vl, e16m2, src, dst)
+    {
+	vuint16m2_t s   = __riscv_vle16_v_u16m2 (src, vl);
+	vuint32m4_t out = rvv_convert_0565_to_8888_m4 (s, vl);
+
+	__riscv_vse32 (dst, out, vl);
+    }
+
+    return iter->buffer;
+}
+
+#define IMAGE_FLAGS                                                            \
+    (FAST_PATH_STANDARD_FLAGS | FAST_PATH_ID_TRANSFORM |                       \
+     FAST_PATH_BITS_IMAGE | FAST_PATH_SAMPLES_COVER_CLIP_NEAREST)
+
+static const pixman_iter_info_t rvv_iters[] = {
+    {PIXMAN_r5g6b5, IMAGE_FLAGS, ITER_NARROW | ITER_SRC,
+     _pixman_iter_init_bits_stride, rvv_fetch_r5g6b5, NULL},
+    {PIXMAN_null},
+};
+
 // clang-format off
 static const pixman_fast_path_t rvv_fast_paths[] = {
     PIXMAN_STD_FAST_PATH (OVER, solid, a8, r5g6b5, rvv_composite_over_n_8_0565),
@@ -3097,6 +3127,8 @@ _pixman_implementation_create_rvv (pixman_implementation_t *fallback)
 {
     pixman_implementation_t *imp = _pixman_implementation_create (
 	fallback, rvv_fast_paths);
+
+    imp->iter_info = rvv_iters;
 
     // clang-format off
     imp->combine_float[PIXMAN_OP_CLEAR] = rvv_combine_clear_u_float;
