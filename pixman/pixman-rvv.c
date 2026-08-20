@@ -3491,6 +3491,142 @@ rvv_fetch_bilinear_affine_r5g6b5 (pixman_iter_t  *iter,
     return iter->buffer;
 }
 
+static uint32_t *
+rvv_fetch_nearest_affine_r5g6b5 (pixman_iter_t *iter, const uint32_t *mask)
+{
+    pixman_image_t *image     = iter->image;
+    bits_image_t   *bits      = &image->bits;
+    const uint16_t *base      = (const uint16_t *)bits->bits;
+    int             rowstride = bits->rowstride;
+    pixman_bool_t   flipped   = rowstride < 0;
+    pixman_bool_t   narrow_offsets;
+    pixman_fixed_t  x, y, ux, uy;
+    int             width = iter->width;
+    int             i;
+
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, &uy))
+	return iter->buffer;
+
+    /* Indexed loads use unsigned byte offsets, so first move the base to the
+     * lowest address and then map logical rows to their physical rows. */
+    if (flipped)
+    {
+	base      = (const uint16_t *)(bits->bits +
+				       (int64_t)(bits->height - 1) * rowstride);
+	rowstride = -rowstride;
+    }
+
+    /* The indexed-load offset is in bytes. Use the faster 32-bit gather only
+     * when every 16-bit pixel in the image is representable; externally
+     * allocated images can otherwise span more than 4 GiB. */
+    narrow_offsets = (uint64_t)(bits->height - 1) * (uint32_t)rowstride * 2 +
+			 (uint32_t)(bits->width - 1) <=
+		     UINT32_MAX / sizeof (uint16_t);
+
+    for (i = 0; i < width;)
+    {
+	size_t      vl     = __riscv_vsetvl_e32m4 ((size_t)(width - i));
+	vuint16m2_t zero16 = __riscv_vmv_v_x_u16m2 (0, vl);
+	vuint32m4_t zero32 = __riscv_vmv_v_x_u32m4 (0, vl);
+	vint32m4_t  idx    = __riscv_vreinterpret_v_u32m4_i32m4 (
+	    __riscv_vid_v_u32m4 (vl));
+	vint32m4_t xv = __riscv_vadd_vx_i32m4 (
+	    __riscv_vmul_vx_i32m4 (idx, ux, vl), x, vl);
+	vint32m4_t yv = __riscv_vadd_vx_i32m4 (
+	    __riscv_vmul_vx_i32m4 (idx, uy, vl), y, vl);
+	vint32m4_t xi = __riscv_vsra_vx_i32m4 (
+	    __riscv_vsub_vx_i32m4 (xv, pixman_fixed_e, vl), 16, vl);
+	vint32m4_t yi = __riscv_vsra_vx_i32m4 (
+	    __riscv_vsub_vx_i32m4 (yv, pixman_fixed_e, vl), 16, vl);
+	vbool8_t cx = __riscv_vmsltu_vx_u32m4_b8 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (xi), bits->width, vl);
+	vbool8_t cy = __riscv_vmsltu_vx_u32m4_b8 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (yi), bits->height, vl);
+	vbool8_t    inb    = __riscv_vmand_mm_b8 (cx, cy, vl);
+	vint32m4_t  yindex = flipped ? __riscv_vrsub_vx_i32m4 (
+					  yi, bits->height - 1, vl)
+				     : yi;
+	vuint16m2_t raw;
+	vuint32m4_t out;
+
+	if (narrow_offsets)
+	{
+	    vint32m4_t  row = __riscv_vmul_vx_i32m4 (yindex, rowstride, vl);
+	    vuint32m4_t byte_offset = __riscv_vadd_vv_u32m4 (
+		__riscv_vsll_vx_u32m4 (__riscv_vreinterpret_v_i32m4_u32m4 (row),
+				       2, vl),
+		__riscv_vsll_vx_u32m4 (__riscv_vreinterpret_v_i32m4_u32m4 (xi),
+				       1, vl),
+		vl);
+
+	    raw = __riscv_vluxei32_v_u16m2_mu (inb, zero16, base, byte_offset,
+					       vl);
+	}
+	else
+	{
+	    vint64m8_t  y64 = __riscv_vwcvt_x_x_v_i64m8 (yindex, vl);
+	    vint64m8_t  x64 = __riscv_vwcvt_x_x_v_i64m8 (xi, vl);
+	    vint64m8_t  row = __riscv_vmul_vx_i64m8 (y64, rowstride, vl);
+	    vuint64m8_t byte_offset = __riscv_vadd_vv_u64m8 (
+		__riscv_vsll_vx_u64m8 (__riscv_vreinterpret_v_i64m8_u64m8 (row),
+				       2, vl),
+		__riscv_vsll_vx_u64m8 (__riscv_vreinterpret_v_i64m8_u64m8 (x64),
+				       1, vl),
+		vl);
+
+	    raw = __riscv_vluxei64_v_u16m2_mu (inb, zero16, base, byte_offset,
+					       vl);
+	}
+
+	out = __riscv_vor_vx_u32m4_mu (
+	    inb, zero32, rvv_convert_0565_to_0888_m4 (raw, vl), 0xff000000, vl);
+	__riscv_vse32_v_u32m4 (iter->buffer + i, out, vl);
+
+	i += vl;
+	x = (pixman_fixed_t)((int64_t)x + (int64_t)vl * ux);
+	y = (pixman_fixed_t)((int64_t)y + (int64_t)vl * uy);
+    }
+
+    return iter->buffer;
+}
+
+#define NEAREST_SCALE_R5G6B5_SCALAR_MAX_WIDTH 24
+
+static uint32_t *
+rvv_fetch_nearest_scale_r5g6b5_scalar (pixman_iter_t  *iter,
+				       const uint32_t *mask)
+{
+    pixman_image_t *image = iter->image;
+    bits_image_t   *bits  = &image->bits;
+    pixman_fixed_t  x, y, ux;
+    const uint16_t *row   = NULL;
+    int             width = iter->width;
+    int             yi;
+    int             i;
+
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, NULL))
+	return iter->buffer;
+
+    yi = pixman_fixed_to_int (y - pixman_fixed_e);
+
+    if ((uint32_t)yi < (uint32_t)bits->height)
+	row = (const uint16_t *)(bits->bits + (int64_t)yi * bits->rowstride);
+
+    for (i = 0; i < width; i++)
+    {
+	int xi = pixman_fixed_to_int (x - pixman_fixed_e);
+
+	if (row && (uint32_t)xi < (uint32_t)bits->width)
+	    iter->buffer[i] = convert_0565_to_8888 (row[xi]);
+	else
+	    iter->buffer[i] = 0;
+
+	x = (pixman_fixed_t)((int64_t)x + ux);
+    }
+
+    return iter->buffer;
+}
+
 #define NEAREST_SCALE_8888_SCALAR_MAX_WIDTH 32
 
 static uint32_t *
@@ -3547,6 +3683,11 @@ rvv_nearest_scale_iter_init (pixman_iter_t            *iter,
 
     switch (iter_info->format)
     {
+	case PIXMAN_r5g6b5:
+	    scalar_fetch = rvv_fetch_nearest_scale_r5g6b5_scalar;
+	    max_width    = NEAREST_SCALE_R5G6B5_SCALAR_MAX_WIDTH;
+	    break;
+
 	case PIXMAN_a8r8g8b8:
 	case PIXMAN_x8r8g8b8:
 	    scalar_fetch = rvv_fetch_nearest_scale_8888_scalar;
@@ -3720,6 +3861,9 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
 #define SCALE_NEAREST_NONE_FLAGS                                        \
     (AFFINE_NEAREST_NONE_FLAGS | FAST_PATH_SCALE_TRANSFORM)
 
+#define SCALE_NEAREST_COVER_FLAGS                                       \
+    (AFFINE_NEAREST_COVER_FLAGS | FAST_PATH_SCALE_TRANSFORM)
+
 static const pixman_iter_info_t rvv_iters[] = {
     { PIXMAN_r5g6b5,
       (FAST_PATH_STANDARD_FLAGS                 |
@@ -3752,6 +3896,27 @@ static const pixman_iter_info_t rvv_iters[] = {
     { PIXMAN_a8r8g8b8, AFFINE_BILINEAR_COVER_FLAGS,
       ITER_NARROW | ITER_SRC,
       NULL, rvv_fetch_bilinear_affine_cover, NULL
+    },
+    /* A scale transform also matches the affine flags below, so these
+     * scalar-fallback entries MUST come first; reordering would silently
+     * route short scale rows onto the gather path. */
+    { PIXMAN_r5g6b5, SCALE_NEAREST_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      rvv_nearest_scale_iter_init,
+      rvv_fetch_nearest_affine_r5g6b5, NULL
+    },
+    { PIXMAN_r5g6b5, SCALE_NEAREST_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      rvv_nearest_scale_iter_init,
+      rvv_fetch_nearest_affine_r5g6b5, NULL
+    },
+    { PIXMAN_r5g6b5, AFFINE_NEAREST_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_nearest_affine_r5g6b5, NULL
+    },
+    { PIXMAN_r5g6b5, AFFINE_NEAREST_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_nearest_affine_r5g6b5, NULL
     },
     { PIXMAN_a8b8g8r8, AFFINE_NEAREST_COVER_FLAGS,
       ITER_NARROW | ITER_SRC,
