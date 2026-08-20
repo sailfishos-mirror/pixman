@@ -3285,7 +3285,150 @@ rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
     return iter->buffer;
 }
 
+static uint32_t *
+rvv_fetch_nearest_affine_abgr (pixman_iter_t *iter, const uint32_t *mask)
+{
+    pixman_image_t *image     = iter->image;
+    bits_image_t   *bits      = &image->bits;
+    const uint32_t *base      = bits->bits;
+    int             rowstride = bits->rowstride;
+    pixman_bool_t   flipped   = bits->rowstride < 0;
+    pixman_bool_t   narrow_offsets;
+    pixman_fixed_t  x, y, ux, uy;
+    pixman_vector_t v;
+    int             width = iter->width;
+    int             line  = iter->y++;
+    int             i;
+    pixman_bool_t   has_alpha;
+
+    /* reference point is the center of the pixel */
+    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
+    v.vector[1] = pixman_int_to_fixed (line) + pixman_fixed_1 / 2;
+    v.vector[2] = pixman_fixed_1;
+
+    if (!pixman_transform_point_3d (image->common.transform, &v))
+    {
+	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
+	_pixman_log_error (FUNC, "Bad matrix, skipping affine fetch\n");
+	return iter->buffer;
+    }
+
+    ux = image->common.transform->matrix[0][0];
+    uy = image->common.transform->matrix[1][0];
+
+    x = v.vector[0];
+    y = v.vector[1];
+
+    has_alpha = PIXMAN_FORMAT_A (image->common.extended_format_code) != 0;
+
+    /* Indexed loads use unsigned byte offsets, so first move the base to the
+     * lowest address and then map logical rows to their physical rows. */
+    if (flipped)
+    {
+	base += (int64_t)(bits->height - 1) * rowstride;
+	rowstride = -rowstride;
+    }
+
+    /* Use narrower gather offsets when every pixel is representable;
+     * externally allocated images can otherwise span more than 4 GiB. */
+    narrow_offsets = (uint64_t)(bits->height - 1) * (uint32_t)rowstride +
+			 (uint32_t)(bits->width - 1) <=
+		     UINT32_MAX / sizeof (uint32_t);
+
+    for (i = 0; i < width;)
+    {
+	size_t      vl     = __riscv_vsetvl_e32m2 ((size_t)(width - i));
+	vuint32m2_t zero32 = __riscv_vmv_v_x_u32m2 (0, vl);
+	vint32m2_t  idx    = __riscv_vreinterpret_v_u32m2_i32m2 (
+            __riscv_vid_v_u32m2 (vl));
+	vint32m2_t xv = __riscv_vadd_vx_i32m2 (
+	    __riscv_vmul_vx_i32m2 (idx, ux, vl), x, vl);
+	vint32m2_t yv = __riscv_vadd_vx_i32m2 (
+	    __riscv_vmul_vx_i32m2 (idx, uy, vl), y, vl);
+	vint32m2_t xi = __riscv_vsra_vx_i32m2 (
+	    __riscv_vsub_vx_i32m2 (xv, pixman_fixed_e, vl), 16, vl);
+	vint32m2_t yi = __riscv_vsra_vx_i32m2 (
+	    __riscv_vsub_vx_i32m2 (yv, pixman_fixed_e, vl), 16, vl);
+	vbool16_t cx = __riscv_vmsltu_vx_u32m2_b16 (
+	    __riscv_vreinterpret_v_i32m2_u32m2 (xi), bits->width, vl);
+	vbool16_t cy = __riscv_vmsltu_vx_u32m2_b16 (
+	    __riscv_vreinterpret_v_i32m2_u32m2 (yi), bits->height, vl);
+	vbool16_t   inb    = __riscv_vmand_mm_b16 (cx, cy, vl);
+	vint32m2_t  yindex = flipped ? __riscv_vrsub_vx_i32m2 (
+                                          yi, bits->height - 1, vl)
+				     : yi;
+	vuint32m2_t raw, s, out;
+
+	if (narrow_offsets)
+	{
+	    vint32m2_t offset = __riscv_vadd_vv_i32m2 (
+		__riscv_vmul_vx_i32m2 (yindex, rowstride, vl), xi, vl);
+	    vuint32m2_t byte_offset = __riscv_vsll_vx_u32m2 (
+		__riscv_vreinterpret_v_i32m2_u32m2 (offset), 2, vl);
+
+	    raw = __riscv_vluxei32_v_u32m2_mu (inb, zero32, base, byte_offset,
+					       vl);
+	}
+	else
+	{
+	    vint64m4_t offset = __riscv_vadd_vv_i64m4 (
+		__riscv_vmul_vx_i64m4 (__riscv_vwcvt_x_x_v_i64m4 (yindex, vl),
+				       rowstride, vl),
+		__riscv_vwcvt_x_x_v_i64m4 (xi, vl), vl);
+	    vuint64m4_t byte_offset = __riscv_vsll_vx_u64m4 (
+		__riscv_vreinterpret_v_i64m4_u64m4 (offset), 2, vl);
+
+	    raw = __riscv_vluxei64_v_u32m2_mu (inb, zero32, base, byte_offset,
+					       vl);
+	}
+
+	s = __riscv_vor_vv_u32m2 (
+	    __riscv_vor_vv_u32m2 (
+		__riscv_vsll_vx_u32m2 (__riscv_vand_vx_u32m2 (raw, 0xff, vl),
+				       16, vl),
+		__riscv_vand_vx_u32m2 (raw, 0xff00, vl), vl),
+	    __riscv_vand_vx_u32m2 (__riscv_vsrl_vx_u32m2 (raw, 16, vl), 0xff,
+				   vl),
+	    vl);
+	out = has_alpha
+		  ? __riscv_vor_vv_u32m2_mu (
+			inb, zero32, s,
+			__riscv_vand_vx_u32m2 (raw, 0xff000000, vl), vl)
+		  : __riscv_vor_vx_u32m2_mu (inb, zero32, s, 0xff000000, vl);
+
+	if (mask)
+	{
+	    vbool16_t store_m = __riscv_vmsne_vx_u32m2_b16 (
+		__riscv_vle32_v_u32m2 (mask + i, vl), 0, vl);
+	    __riscv_vse32_v_u32m2_m (store_m, iter->buffer + i, out, vl);
+	}
+	else
+	{
+	    __riscv_vse32 (iter->buffer + i, out, vl);
+	}
+
+	i += vl;
+	x = (pixman_fixed_t)((int64_t)x + (int64_t)vl * ux);
+	y = (pixman_fixed_t)((int64_t)y + (int64_t)vl * uy);
+    }
+
+    return iter->buffer;
+}
+
 // clang-format off
+#define AFFINE_NEAREST_FLAGS                                            \
+    (FAST_PATH_STANDARD_FLAGS           |                               \
+     FAST_PATH_BITS_IMAGE               |                               \
+     FAST_PATH_HAS_TRANSFORM            |                               \
+     FAST_PATH_AFFINE_TRANSFORM         |                               \
+     FAST_PATH_NEAREST_FILTER)
+
+#define AFFINE_NEAREST_COVER_FLAGS                                      \
+    (AFFINE_NEAREST_FLAGS | FAST_PATH_SAMPLES_COVER_CLIP_NEAREST)
+
+#define AFFINE_NEAREST_NONE_FLAGS                                       \
+    (AFFINE_NEAREST_FLAGS | FAST_PATH_NONE_REPEAT)
+
 static const pixman_iter_info_t rvv_iters[] = {
     { PIXMAN_r5g6b5,
       (FAST_PATH_STANDARD_FLAGS                 |
@@ -3315,6 +3458,22 @@ static const pixman_iter_info_t rvv_iters[] = {
        FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
       ITER_NARROW | ITER_SRC,
       NULL, rvv_fetch_bilinear_affine_cover, NULL
+    },
+    { PIXMAN_a8b8g8r8, AFFINE_NEAREST_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_nearest_affine_abgr, NULL
+    },
+    { PIXMAN_x8b8g8r8, AFFINE_NEAREST_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_nearest_affine_abgr, NULL
+    },
+    { PIXMAN_a8b8g8r8, AFFINE_NEAREST_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_nearest_affine_abgr, NULL
+    },
+    { PIXMAN_x8b8g8r8, AFFINE_NEAREST_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_nearest_affine_abgr, NULL
     },
     {PIXMAN_null},
 };
