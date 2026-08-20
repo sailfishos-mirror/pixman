@@ -3294,6 +3294,38 @@ rvv_bilinear_weights_m4 (vint32m4_t   vx,
     *wtl = __riscv_vmul_vv_u32m4 (idx, idy, vl);
 }
 
+static force_inline pixman_bool_t
+rvv_transform_scanline_start (pixman_iter_t  *iter,
+			      pixman_fixed_t *x,
+			      pixman_fixed_t *y,
+			      pixman_fixed_t *ux,
+			      pixman_fixed_t *uy)
+{
+    pixman_image_t *image = iter->image;
+    pixman_vector_t v;
+
+    /* reference point is the center of the pixel */
+    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
+    v.vector[1] = pixman_int_to_fixed (iter->y++) + pixman_fixed_1 / 2;
+    v.vector[2] = pixman_fixed_1;
+
+    if (!pixman_transform_point_3d (image->common.transform, &v))
+    {
+	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
+	_pixman_log_error (FUNC, "Bad matrix, skipping affine fetch\n");
+	return FALSE;
+    }
+
+    *x  = v.vector[0];
+    *y  = v.vector[1];
+    *ux = image->common.transform->matrix[0][0];
+
+    if (uy)
+	*uy = image->common.transform->matrix[1][0];
+
+    return TRUE;
+}
+
 static uint32_t *
 rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
 				 const uint32_t *mask)
@@ -3304,27 +3336,13 @@ rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
     int             rowstride = bits->rowstride;
     pixman_bool_t   flipped   = bits->rowstride < 0;
     pixman_bool_t   narrow_offsets;
-    pixman_vector_t v;
     pixman_fixed_t  x, y, ux, uy;
     int             i;
 
     COMPILE_TIME_ASSERT (BILINEAR_INTERPOLATION_BITS < 8);
 
-    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
-    v.vector[1] = pixman_int_to_fixed (iter->y++) + pixman_fixed_1 / 2;
-    v.vector[2] = pixman_fixed_1;
-
-    if (!pixman_transform_point_3d (image->common.transform, &v))
-    {
-	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
-	_pixman_log_error (FUNC, "Bad matrix, skipping bilinear fetch\n");
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, &uy))
 	return iter->buffer;
-    }
-
-    ux = image->common.transform->matrix[0][0];
-    uy = image->common.transform->matrix[1][0];
-    x  = v.vector[0];
-    y  = v.vector[1];
 
     /* Indexed loads use unsigned byte offsets, so first move the base to the
      * lowest address and then map logical rows to their physical rows. */
@@ -3391,27 +3409,13 @@ rvv_fetch_bilinear_affine_r5g6b5 (pixman_iter_t  *iter,
     int             rowstride = bits->rowstride;
     pixman_bool_t   flipped   = rowstride < 0;
     pixman_bool_t   narrow_offsets;
-    pixman_vector_t v;
     pixman_fixed_t  x, y, ux, uy;
     int             i;
 
     COMPILE_TIME_ASSERT (BILINEAR_INTERPOLATION_BITS < 8);
 
-    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
-    v.vector[1] = pixman_int_to_fixed (iter->y++) + pixman_fixed_1 / 2;
-    v.vector[2] = pixman_fixed_1;
-
-    if (!pixman_transform_point_3d (image->common.transform, &v))
-    {
-	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
-	_pixman_log_error (FUNC, "Bad matrix, skipping bilinear fetch\n");
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, &uy))
 	return iter->buffer;
-    }
-
-    ux = image->common.transform->matrix[0][0];
-    uy = image->common.transform->matrix[1][0];
-    x  = v.vector[0];
-    y  = v.vector[1];
 
     /* Indexed loads use unsigned byte offsets, so first move the base to the
      * lowest address and then map logical rows to their physical rows. */
@@ -3494,30 +3498,17 @@ rvv_fetch_nearest_scale_8888_scalar (pixman_iter_t *iter, const uint32_t *mask)
 {
     pixman_image_t *image = iter->image;
     bits_image_t   *bits  = &image->bits;
-    pixman_vector_t v;
-    pixman_fixed_t  x, ux;
+    pixman_fixed_t  x, y, ux;
     const uint32_t *row = NULL;
     pixman_bool_t   has_alpha;
     int             width = iter->width;
-    int             line  = iter->y++;
     int             yi;
     int             i;
 
-    /* reference point is the center of the pixel */
-    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
-    v.vector[1] = pixman_int_to_fixed (line) + pixman_fixed_1 / 2;
-    v.vector[2] = pixman_fixed_1;
-
-    if (!pixman_transform_point_3d (image->common.transform, &v))
-    {
-	memset (iter->buffer, 0, (size_t)width * sizeof (uint32_t));
-	_pixman_log_error (FUNC, "Bad matrix, skipping affine fetch\n");
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, NULL))
 	return iter->buffer;
-    }
 
-    x         = v.vector[0];
-    ux        = image->common.transform->matrix[0][0];
-    yi        = pixman_fixed_to_int (v.vector[1] - pixman_fixed_e);
+    yi        = pixman_fixed_to_int (y - pixman_fixed_e);
     has_alpha = PIXMAN_FORMAT_A (image->common.extended_format_code) != 0;
 
     if ((uint32_t)yi < (uint32_t)bits->height)
@@ -3548,12 +3539,27 @@ rvv_fetch_nearest_scale_8888_scalar (pixman_iter_t *iter, const uint32_t *mask)
 }
 
 static void
-rvv_nearest_scale_8888_iter_init (pixman_iter_t            *iter,
-				  const pixman_iter_info_t *iter_info)
+rvv_nearest_scale_iter_init (pixman_iter_t            *iter,
+			     const pixman_iter_info_t *iter_info)
 {
+    pixman_iter_get_scanline_t scalar_fetch;
+    int                        max_width;
+
+    switch (iter_info->format)
+    {
+	case PIXMAN_a8r8g8b8:
+	case PIXMAN_x8r8g8b8:
+	    scalar_fetch = rvv_fetch_nearest_scale_8888_scalar;
+	    max_width    = NEAREST_SCALE_8888_SCALAR_MAX_WIDTH;
+	    break;
+
+	default:
+	    return;
+    }
+
     /* Direct loads win until the gather setup is amortized. */
-    if (iter->width <= NEAREST_SCALE_8888_SCALAR_MAX_WIDTH)
-	iter->get_scanline = rvv_fetch_nearest_scale_8888_scalar;
+    if (iter->width <= max_width)
+	iter->get_scanline = scalar_fetch;
 }
 
 static uint32_t *
@@ -3569,28 +3575,11 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
     pixman_bool_t        has_alpha;
     pixman_bool_t        swap_rb;
     pixman_fixed_t       x, y, ux, uy;
-    pixman_vector_t      v;
     int                  width = iter->width;
-    int                  line  = iter->y++;
     int                  i;
 
-    /* reference point is the center of the pixel */
-    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
-    v.vector[1] = pixman_int_to_fixed (line) + pixman_fixed_1 / 2;
-    v.vector[2] = pixman_fixed_1;
-
-    if (!pixman_transform_point_3d (image->common.transform, &v))
-    {
-	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
-	_pixman_log_error (FUNC, "Bad matrix, skipping affine fetch\n");
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, &uy))
 	return iter->buffer;
-    }
-
-    ux = image->common.transform->matrix[0][0];
-    uy = image->common.transform->matrix[1][0];
-
-    x = v.vector[0];
-    y = v.vector[1];
 
     has_alpha = PIXMAN_FORMAT_A (format) != 0;
     swap_rb   = PIXMAN_FORMAT_TYPE (format) == PIXMAN_TYPE_ABGR;
@@ -3782,12 +3771,12 @@ static const pixman_iter_info_t rvv_iters[] = {
     },
     { PIXMAN_a8r8g8b8, SCALE_NEAREST_NONE_FLAGS,
       ITER_NARROW | ITER_SRC,
-      rvv_nearest_scale_8888_iter_init,
+      rvv_nearest_scale_iter_init,
       rvv_fetch_nearest_affine_8888, NULL
     },
     { PIXMAN_x8r8g8b8, SCALE_NEAREST_NONE_FLAGS,
       ITER_NARROW | ITER_SRC,
-      rvv_nearest_scale_8888_iter_init,
+      rvv_nearest_scale_iter_init,
       rvv_fetch_nearest_affine_8888, NULL
     },
     {PIXMAN_null},
