@@ -3098,6 +3098,92 @@ rvv_bilinear_load_m4 (const uint32_t *base,
     }
 }
 
+static force_inline void
+rvv_bilinear_load_0565_m4 (const uint16_t *base,
+			   vint32m4_t      y,
+			   vint32m4_t      x,
+			   int             rowstride,
+			   pixman_bool_t   flipped,
+			   pixman_bool_t   narrow_offsets,
+			   vbool8_t        mtl,
+			   vbool8_t        mtr,
+			   vbool8_t        mbl,
+			   vbool8_t        mbr,
+			   vuint32m4_t    *tl,
+			   vuint32m4_t    *tr,
+			   vuint32m4_t    *bl,
+			   vuint32m4_t    *br,
+			   size_t          vl)
+{
+    vuint16m2_t gtl, gtr, gbl, gbr;
+    vuint32m4_t zero = __riscv_vmv_v_x_u32m4 (0, vl);
+
+    /* Pixman rowstride is measured in uint32_t words, not source pixels. */
+    if (narrow_offsets)
+    {
+	vint32m4_t row = __riscv_vmul_vx_i32m4 (y, rowstride, vl);
+	vuint32m4_t top = __riscv_vadd_vv_u32m4 (
+	    __riscv_vsll_vx_u32m4 (
+		__riscv_vreinterpret_v_i32m4_u32m4 (row), 2, vl),
+	    __riscv_vsll_vx_u32m4 (
+		__riscv_vreinterpret_v_i32m4_u32m4 (x), 1, vl),
+	    vl);
+	vuint32m4_t bottom;
+	uint32_t row_bytes = (uint32_t)rowstride * sizeof (uint32_t);
+
+	if (flipped)
+	    bottom = __riscv_vsub_vx_u32m4 (top, row_bytes, vl);
+	else
+	    bottom = __riscv_vadd_vx_u32m4 (top, row_bytes, vl);
+
+	gtl = __riscv_vluxei32_v_u16m2_m (mtl, base, top, vl);
+	gtr = __riscv_vluxei32_v_u16m2_m (
+	    mtr, base, __riscv_vadd_vx_u32m4 (top, sizeof (uint16_t), vl),
+	    vl);
+	gbl = __riscv_vluxei32_v_u16m2_m (mbl, base, bottom, vl);
+	gbr = __riscv_vluxei32_v_u16m2_m (
+	    mbr, base,
+	    __riscv_vadd_vx_u32m4 (bottom, sizeof (uint16_t), vl), vl);
+    }
+    else
+    {
+	vint64m8_t y64 = __riscv_vwcvt_x_x_v_i64m8 (y, vl);
+	vint64m8_t x64 = __riscv_vwcvt_x_x_v_i64m8 (x, vl);
+	vint64m8_t row = __riscv_vmul_vx_i64m8 (y64, rowstride, vl);
+	vuint64m8_t top = __riscv_vadd_vv_u64m8 (
+	    __riscv_vsll_vx_u64m8 (
+		__riscv_vreinterpret_v_i64m8_u64m8 (row), 2, vl),
+	    __riscv_vsll_vx_u64m8 (
+		__riscv_vreinterpret_v_i64m8_u64m8 (x64), 1, vl),
+	    vl);
+	vuint64m8_t bottom;
+	uint64_t row_bytes = (uint64_t)rowstride * sizeof (uint32_t);
+
+	if (flipped)
+	    bottom = __riscv_vsub_vx_u64m8 (top, row_bytes, vl);
+	else
+	    bottom = __riscv_vadd_vx_u64m8 (top, row_bytes, vl);
+
+	gtl = __riscv_vluxei64_v_u16m2_m (mtl, base, top, vl);
+	gtr = __riscv_vluxei64_v_u16m2_m (
+	    mtr, base, __riscv_vadd_vx_u64m8 (top, sizeof (uint16_t), vl),
+	    vl);
+	gbl = __riscv_vluxei64_v_u16m2_m (mbl, base, bottom, vl);
+	gbr = __riscv_vluxei64_v_u16m2_m (
+	    mbr, base,
+	    __riscv_vadd_vx_u64m8 (bottom, sizeof (uint16_t), vl), vl);
+    }
+
+    *tl = __riscv_vor_vx_u32m4_mu (
+	mtl, zero, rvv_convert_0565_to_0888_m4 (gtl, vl), 0xff000000, vl);
+    *tr = __riscv_vor_vx_u32m4_mu (
+	mtr, zero, rvv_convert_0565_to_0888_m4 (gtr, vl), 0xff000000, vl);
+    *bl = __riscv_vor_vx_u32m4_mu (
+	mbl, zero, rvv_convert_0565_to_0888_m4 (gbl, vl), 0xff000000, vl);
+    *br = __riscv_vor_vx_u32m4_mu (
+	mbr, zero, rvv_convert_0565_to_0888_m4 (gbr, vl), 0xff000000, vl);
+}
+
 static force_inline vuint16m4_t
 rvv_bilinear_weight_m4 (vuint32m4_t weight, size_t vl)
 {
@@ -3181,6 +3267,33 @@ rvv_bilinear_blend_m4 (vuint32m4_t tl,
     return __riscv_vreinterpret_v_u16m4_u32m4 (pixel16);
 }
 
+static force_inline void
+rvv_bilinear_weights_m4 (vint32m4_t   vx,
+			 vint32m4_t   vy,
+			 vuint32m4_t *wtl,
+			 vuint32m4_t *wtr,
+			 vuint32m4_t *wbl,
+			 vuint32m4_t *wbr,
+			 size_t       vl)
+{
+    vuint32m4_t dx, dy, idx, idy;
+
+    dx = __riscv_vand_vx_u32m4 (
+	__riscv_vreinterpret_v_i32m4_u32m4 (
+	    __riscv_vsra_vx_i32m4 (vx, 16 - BILINEAR_INTERPOLATION_BITS, vl)),
+	BILINEAR_INTERPOLATION_RANGE - 1, vl);
+    dy = __riscv_vand_vx_u32m4 (
+	__riscv_vreinterpret_v_i32m4_u32m4 (
+	    __riscv_vsra_vx_i32m4 (vy, 16 - BILINEAR_INTERPOLATION_BITS, vl)),
+	BILINEAR_INTERPOLATION_RANGE - 1, vl);
+    idx  = __riscv_vrsub_vx_u32m4 (dx, BILINEAR_INTERPOLATION_RANGE, vl);
+    idy  = __riscv_vrsub_vx_u32m4 (dy, BILINEAR_INTERPOLATION_RANGE, vl);
+    *wbr = __riscv_vmul_vv_u32m4 (dx, dy, vl);
+    *wtr = __riscv_vmul_vv_u32m4 (dx, idy, vl);
+    *wbl = __riscv_vmul_vv_u32m4 (idx, dy, vl);
+    *wtl = __riscv_vmul_vv_u32m4 (idx, idy, vl);
+}
+
 static uint32_t *
 rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
 				 const uint32_t *mask)
@@ -3234,7 +3347,7 @@ rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
     {
 	size_t      vl;
 	vuint32m4_t lane_u;
-	vuint32m4_t tl, tr, bl, br, dx, dy, idx, idy;
+	vuint32m4_t tl, tr, bl, br;
 	vuint32m4_t wbr, wtr, wbl, wtl, pixel;
 	vint32m4_t  lane, vx, vy, x1, y1;
 
@@ -3253,24 +3366,113 @@ rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
 
 	rvv_bilinear_load_m4 (base, y1, x1, rowstride, flipped,
 			      narrow_offsets, &tl, &tr, &bl, &br, vl);
-	dx = __riscv_vand_vx_u32m4 (
-	    __riscv_vreinterpret_v_i32m4_u32m4 (
-		__riscv_vsra_vx_i32m4 (
-		    vx, 16 - BILINEAR_INTERPOLATION_BITS, vl)),
-	    BILINEAR_INTERPOLATION_RANGE - 1, vl);
-	dy = __riscv_vand_vx_u32m4 (
-	    __riscv_vreinterpret_v_i32m4_u32m4 (
-		__riscv_vsra_vx_i32m4 (
-		    vy, 16 - BILINEAR_INTERPOLATION_BITS, vl)),
-	    BILINEAR_INTERPOLATION_RANGE - 1, vl);
-	idx = __riscv_vrsub_vx_u32m4 (
-	    dx, BILINEAR_INTERPOLATION_RANGE, vl);
-	idy = __riscv_vrsub_vx_u32m4 (
-	    dy, BILINEAR_INTERPOLATION_RANGE, vl);
-	wbr = __riscv_vmul_vv_u32m4 (dx, dy, vl);
-	wtr = __riscv_vmul_vv_u32m4 (dx, idy, vl);
-	wbl = __riscv_vmul_vv_u32m4 (idx, dy, vl);
-	wtl = __riscv_vmul_vv_u32m4 (idx, idy, vl);
+	rvv_bilinear_weights_m4 (vx, vy, &wtl, &wtr, &wbl, &wbr, vl);
+
+	pixel = rvv_bilinear_blend_m4 (
+	    tl, tr, bl, br, wtl, wtr, wbl, wbr, vl);
+
+	__riscv_vse32_v_u32m4 (iter->buffer + i, pixel, vl);
+
+	x = (pixman_fixed_t)((int64_t)x + (int64_t)ux * vl);
+	y = (pixman_fixed_t)((int64_t)y + (int64_t)uy * vl);
+	i += vl;
+    }
+
+    return iter->buffer;
+}
+
+static uint32_t *
+rvv_fetch_bilinear_affine_r5g6b5 (pixman_iter_t  *iter,
+				   const uint32_t *mask)
+{
+    pixman_image_t *image     = iter->image;
+    bits_image_t   *bits      = &image->bits;
+    const uint16_t *base      = (const uint16_t *)bits->bits;
+    int             rowstride = bits->rowstride;
+    pixman_bool_t   flipped   = rowstride < 0;
+    pixman_bool_t   narrow_offsets;
+    pixman_vector_t v;
+    pixman_fixed_t  x, y, ux, uy;
+    int             i;
+
+    COMPILE_TIME_ASSERT (BILINEAR_INTERPOLATION_BITS < 8);
+
+    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
+    v.vector[1] = pixman_int_to_fixed (iter->y++) + pixman_fixed_1 / 2;
+    v.vector[2] = pixman_fixed_1;
+
+    if (!pixman_transform_point_3d (image->common.transform, &v))
+    {
+	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
+	_pixman_log_error (FUNC, "Bad matrix, skipping bilinear fetch\n");
+	return iter->buffer;
+    }
+
+    ux = image->common.transform->matrix[0][0];
+    uy = image->common.transform->matrix[1][0];
+    x  = v.vector[0];
+    y  = v.vector[1];
+
+    /* Indexed loads use unsigned byte offsets, so first move the base to the
+     * lowest address and then map logical rows to their physical rows. */
+    if (flipped)
+    {
+	base = (const uint16_t *)(bits->bits +
+				 (int64_t)(bits->height - 1) * rowstride);
+	rowstride = -rowstride;
+    }
+
+    /* The indexed-load offset is in bytes. Use the faster 32-bit gather only
+     * when every 16-bit pixel in the image is representable; externally
+     * allocated images can otherwise span more than 4 GiB. */
+    narrow_offsets =
+	(uint64_t)(bits->height - 1) * (uint32_t)rowstride * 2 +
+		(uint32_t)(bits->width - 1) <=
+	    UINT32_MAX / sizeof (uint16_t);
+
+    for (i = 0; i < iter->width;)
+    {
+	size_t      vl;
+	vuint32m4_t lane_u;
+	vint32m4_t  lane, vx, vy, x1, y1, x2, y2, yindex;
+	vbool8_t    x1ok, x2ok, y1ok, y2ok, mtl, mtr, mbl, mbr;
+	vuint32m4_t tl, tr, bl, br;
+	vuint32m4_t wbr, wtr, wbl, wtl, pixel;
+
+	vl     = __riscv_vsetvl_e32m4 (iter->width - i);
+	lane_u = __riscv_vid_v_u32m4 (vl);
+	lane   = __riscv_vreinterpret_v_u32m4_i32m4 (lane_u);
+	vx     = __riscv_vadd_vx_i32m4 (
+	    __riscv_vmul_vx_i32m4 (lane, ux, vl),
+	    x - pixman_fixed_1 / 2, vl);
+	vy = __riscv_vadd_vx_i32m4 (
+	    __riscv_vmul_vx_i32m4 (lane, uy, vl),
+	    y - pixman_fixed_1 / 2, vl);
+	x1 = __riscv_vsra_vx_i32m4 (vx, 16, vl);
+	y1 = __riscv_vsra_vx_i32m4 (vy, 16, vl);
+	x2 = __riscv_vadd_vx_i32m4 (x1, 1, vl);
+	y2 = __riscv_vadd_vx_i32m4 (y1, 1, vl);
+
+	x1ok = __riscv_vmsltu_vx_u32m4_b8 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (x1), bits->width, vl);
+	x2ok = __riscv_vmsltu_vx_u32m4_b8 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (x2), bits->width, vl);
+	y1ok = __riscv_vmsltu_vx_u32m4_b8 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (y1), bits->height, vl);
+	y2ok = __riscv_vmsltu_vx_u32m4_b8 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (y2), bits->height, vl);
+	mtl = __riscv_vmand_mm_b8 (x1ok, y1ok, vl);
+	mtr = __riscv_vmand_mm_b8 (x2ok, y1ok, vl);
+	mbl = __riscv_vmand_mm_b8 (x1ok, y2ok, vl);
+	mbr = __riscv_vmand_mm_b8 (x2ok, y2ok, vl);
+
+	yindex = flipped ? __riscv_vrsub_vx_i32m4 (
+			       y1, bits->height - 1, vl)
+			 : y1;
+	rvv_bilinear_load_0565_m4 (
+	    base, yindex, x1, rowstride, flipped, narrow_offsets,
+	    mtl, mtr, mbl, mbr, &tl, &tr, &bl, &br, vl);
+	rvv_bilinear_weights_m4 (vx, vy, &wtl, &wtr, &wbl, &wbr, vl);
 
 	pixel = rvv_bilinear_blend_m4 (
 	    tl, tr, bl, br, wtl, wtr, wbl, wbr, vl);
@@ -3416,6 +3618,19 @@ rvv_fetch_nearest_affine_abgr (pixman_iter_t *iter, const uint32_t *mask)
 }
 
 // clang-format off
+#define AFFINE_BILINEAR_FLAGS                                           \
+    (FAST_PATH_STANDARD_FLAGS           |                               \
+     FAST_PATH_BITS_IMAGE               |                               \
+     FAST_PATH_HAS_TRANSFORM            |                               \
+     FAST_PATH_AFFINE_TRANSFORM         |                               \
+     FAST_PATH_BILINEAR_FILTER)
+
+#define AFFINE_BILINEAR_COVER_FLAGS                                     \
+    (AFFINE_BILINEAR_FLAGS | FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR)
+
+#define AFFINE_BILINEAR_NONE_FLAGS                                      \
+    (AFFINE_BILINEAR_FLAGS | FAST_PATH_NONE_REPEAT)
+
 #define AFFINE_NEAREST_FLAGS                                            \
     (FAST_PATH_STANDARD_FLAGS           |                               \
      FAST_PATH_BITS_IMAGE               |                               \
@@ -3450,12 +3665,15 @@ static const pixman_iter_info_t rvv_iters[] = {
       _pixman_bilinear_cover_iter_init,
       NULL, NULL
     },
-    { PIXMAN_a8r8g8b8,
-      (FAST_PATH_STANDARD_FLAGS                 |
-       FAST_PATH_HAS_TRANSFORM                  |
-       FAST_PATH_AFFINE_TRANSFORM               |
-       FAST_PATH_BILINEAR_FILTER                |
-       FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
+    { PIXMAN_r5g6b5, AFFINE_BILINEAR_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_bilinear_affine_r5g6b5, NULL
+    },
+    { PIXMAN_r5g6b5, AFFINE_BILINEAR_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_bilinear_affine_r5g6b5, NULL
+    },
+    { PIXMAN_a8r8g8b8, AFFINE_BILINEAR_COVER_FLAGS,
       ITER_NARROW | ITER_SRC,
       NULL, rvv_fetch_bilinear_affine_cover, NULL
     },
