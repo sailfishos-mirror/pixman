@@ -295,10 +295,34 @@ elif use_vmx.enabled()
   error('vmx Support unavailable, but required')
 endif
 
+# The POWER8 and POWER9 backends are recompilations of the VMX one with a
+# higher -mcpu.  pixman-vmx.c itself is compiled with the toolchain's
+# default -mcpu, so if that baseline already implies the ISA level of a
+# variant, the variant would be a byte for byte duplicate of the VMX object
+# and there is nothing to gain from building it.
+#
+# This is always the case for POWER8 on ppc64le, whose ABI baseline is
+# POWER8, and it also covers a distribution that puts -mcpu=power9 or newer
+# into CFLAGS.
+vmx_baseline_covers = []
+if have_vmx
+  foreach v : [['power8', '_ARCH_PWR8'], ['power9', '_ARCH_PWR9']]
+    if cc.compiles('''
+        #ifndef @0@
+        #error "baseline is older than this ISA level"
+        #endif
+        int main (void) { return 0; }'''.format(v[1]),
+        args : vmx_flags,
+        name : 'VMX baseline already provides ' + v[0])
+      vmx_baseline_covers += v[0]
+    endif
+  endforeach
+endif
+
 use_power8 = get_option('power8')
 have_power8 = false
 power8_flags = ['-mcpu=power8']
-if not use_power8.disabled()
+if not use_power8.disabled() and not vmx_baseline_covers.contains('power8')
   if host_machine.cpu_family().startswith('ppc')
     if cc.compiles('''
         #ifndef _ARCH_PWR8
@@ -326,14 +350,14 @@ endif
 
 if have_power8
   config.set10('USE_POWER8', true)
-elif use_power8.enabled()
+elif use_power8.enabled() and not vmx_baseline_covers.contains('power8')
   error('power8 Support unavailable, but required')
 endif
 
 use_power9 = get_option('power9')
 have_power9 = false
 power9_flags = ['-mcpu=power9']
-if not use_power9.disabled()
+if not use_power9.disabled() and not vmx_baseline_covers.contains('power9')
   if host_machine.cpu_family().startswith('ppc')
     if cc.compiles('''
         #ifndef _ARCH_PWR9
@@ -361,7 +385,7 @@ endif
 
 if have_power9
   config.set10('USE_POWER9', true)
-elif use_power9.enabled()
+elif use_power9.enabled() and not vmx_baseline_covers.contains('power9')
   error('power9 Support unavailable, but required')
 endif
 

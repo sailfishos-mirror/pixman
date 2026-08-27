@@ -290,6 +290,14 @@ _pixman_ppc_get_implementations (pixman_implementation_t *imp)
     /* The POWER9 and POWER8 implementations are recompilations of the
      * VMX one, so whichever is selected completely replaces it, and
      * disabling "vmx" disables them as well.
+     *
+     * The VMX implementation must always remain as the last resort,
+     * even where a variant covers the same ISA level: pixman_have_vmx ()
+     * always produces an answer, falling back to a SIGILL probe, while
+     * pixman_hwcap2 () reports no features at all on a platform that has
+     * neither getauxval () nor elf_aux_info () and is not Linux.  Were
+     * the variants to replace it outright, such a platform would end up
+     * with no vector code on hardware that provably has VSX.
      */
 #ifdef USE_PPC_HWCAP2
     unsigned long hwcap2 = pixman_hwcap2 ();
