@@ -3039,17 +3039,286 @@ rvv_fetch_r5g6b5 (pixman_iter_t *iter, const uint32_t *mask)
     return iter->buffer;
 }
 
-#define IMAGE_FLAGS                                                            \
-    (FAST_PATH_STANDARD_FLAGS | FAST_PATH_ID_TRANSFORM |                       \
-     FAST_PATH_BITS_IMAGE | FAST_PATH_SAMPLES_COVER_CLIP_NEAREST)
+static force_inline void
+rvv_bilinear_load_m4 (const uint32_t *base,
+		      vint32m4_t      y,
+		      vint32m4_t      x,
+		      int             rowstride,
+		      pixman_bool_t   flipped,
+		      pixman_bool_t   narrow_offsets,
+		      vuint32m4_t    *tl,
+		      vuint32m4_t    *tr,
+		      vuint32m4_t    *bl,
+		      vuint32m4_t    *br,
+		      size_t          vl)
+{
+    if (narrow_offsets)
+    {
+	vint32m4_t index = __riscv_vadd_vv_i32m4 (
+	    __riscv_vmul_vx_i32m4 (y, rowstride, vl), x, vl);
+	vuint32m4_t top = __riscv_vsll_vx_u32m4 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (index), 2, vl);
+	vuint32m4_t bottom;
+	uint32_t row_bytes = (uint32_t)rowstride * sizeof (uint32_t);
 
+	if (flipped)
+	    bottom = __riscv_vsub_vx_u32m4 (top, row_bytes, vl);
+	else
+	    bottom = __riscv_vadd_vx_u32m4 (top, row_bytes, vl);
+
+	*tl = __riscv_vluxei32_v_u32m4 (base, top, vl);
+	*tr = __riscv_vluxei32_v_u32m4 (
+	    base, __riscv_vadd_vx_u32m4 (top, sizeof (uint32_t), vl), vl);
+	*bl = __riscv_vluxei32_v_u32m4 (base, bottom, vl);
+	*br = __riscv_vluxei32_v_u32m4 (
+	    base, __riscv_vadd_vx_u32m4 (bottom, sizeof (uint32_t), vl), vl);
+    }
+    else
+    {
+	vint64m8_t y64 = __riscv_vwcvt_x_x_v_i64m8 (y, vl);
+	vint64m8_t x64 = __riscv_vwcvt_x_x_v_i64m8 (x, vl);
+	vint64m8_t index = __riscv_vadd_vv_i64m8 (
+	    __riscv_vmul_vx_i64m8 (y64, rowstride, vl), x64, vl);
+	vuint64m8_t top = __riscv_vsll_vx_u64m8 (
+	    __riscv_vreinterpret_v_i64m8_u64m8 (index), 2, vl);
+	vuint64m8_t bottom;
+	uint64_t row_bytes = (uint64_t)rowstride * sizeof (uint32_t);
+
+	if (flipped)
+	    bottom = __riscv_vsub_vx_u64m8 (top, row_bytes, vl);
+	else
+	    bottom = __riscv_vadd_vx_u64m8 (top, row_bytes, vl);
+
+	*tl = __riscv_vluxei64_v_u32m4 (base, top, vl);
+	*tr = __riscv_vluxei64_v_u32m4 (
+	    base, __riscv_vadd_vx_u64m8 (top, sizeof (uint32_t), vl), vl);
+	*bl = __riscv_vluxei64_v_u32m4 (base, bottom, vl);
+	*br = __riscv_vluxei64_v_u32m4 (
+	    base, __riscv_vadd_vx_u64m8 (bottom, sizeof (uint32_t), vl), vl);
+    }
+}
+
+static force_inline vuint16m4_t
+rvv_bilinear_weight_m4 (vuint32m4_t weight, size_t vl)
+{
+    size_t vl2 = vl * 2;
+    vuint16m4_t sparse = __riscv_vreinterpret_v_u32m4_u16m4 (weight);
+
+    /* Reinterpreting each weight produces [weight, 0] in 16-bit lanes.
+     * vslide1up copies each low half into the following high half, and the
+     * OR duplicates it because BILINEAR_INTERPOLATION_BITS < 8 leaves the
+     * high half zero (COMPILE_TIME_ASSERT below). */
+    return __riscv_vor_vv_u16m4 (
+	sparse, __riscv_vslide1up_vx_u16m4 (sparse, 0, vl2), vl2);
+}
+
+static force_inline vuint16m4_t
+rvv_bilinear_channel_m4 (vuint32m4_t tl,
+			 vuint32m4_t tr,
+			 vuint32m4_t bl,
+			 vuint32m4_t br,
+			 vuint16m4_t wtl,
+			 vuint16m4_t wtr,
+			 vuint16m4_t wbl,
+			 vuint16m4_t wbr,
+			 pixman_bool_t high,
+			 size_t       vl)
+{
+    size_t vl2 = vl * 2;
+    vuint16m4_t tl16 = __riscv_vreinterpret_v_u32m4_u16m4 (tl);
+    vuint16m4_t tr16 = __riscv_vreinterpret_v_u32m4_u16m4 (tr);
+    vuint16m4_t bl16 = __riscv_vreinterpret_v_u32m4_u16m4 (bl);
+    vuint16m4_t br16 = __riscv_vreinterpret_v_u32m4_u16m4 (br);
+    vuint32m8_t sum;
+
+    if (high)
+    {
+	tl16 = __riscv_vsrl_vx_u16m4 (tl16, 8, vl2);
+	tr16 = __riscv_vsrl_vx_u16m4 (tr16, 8, vl2);
+	bl16 = __riscv_vsrl_vx_u16m4 (bl16, 8, vl2);
+	br16 = __riscv_vsrl_vx_u16m4 (br16, 8, vl2);
+    }
+    else
+    {
+	tl16 = __riscv_vand_vx_u16m4 (tl16, 0xff, vl2);
+	tr16 = __riscv_vand_vx_u16m4 (tr16, 0xff, vl2);
+	bl16 = __riscv_vand_vx_u16m4 (bl16, 0xff, vl2);
+	br16 = __riscv_vand_vx_u16m4 (br16, 0xff, vl2);
+    }
+
+    sum = __riscv_vwmulu_vv_u32m8 (tl16, wtl, vl2);
+    sum = __riscv_vwmaccu_vv_u32m8 (sum, tr16, wtr, vl2);
+    sum = __riscv_vwmaccu_vv_u32m8 (sum, bl16, wbl, vl2);
+    sum = __riscv_vwmaccu_vv_u32m8 (sum, br16, wbr, vl2);
+
+    return __riscv_vnsrl_wx_u16m4 (
+	sum, 2 * BILINEAR_INTERPOLATION_BITS, vl2);
+}
+
+static force_inline vuint32m4_t
+rvv_bilinear_blend_m4 (vuint32m4_t tl,
+		       vuint32m4_t tr,
+		       vuint32m4_t bl,
+		       vuint32m4_t br,
+		       vuint32m4_t wtl,
+		       vuint32m4_t wtr,
+		       vuint32m4_t wbl,
+		       vuint32m4_t wbr,
+		       size_t      vl)
+{
+    size_t vl2 = vl * 2;
+    vuint16m4_t wtl16 = rvv_bilinear_weight_m4 (wtl, vl);
+    vuint16m4_t wtr16 = rvv_bilinear_weight_m4 (wtr, vl);
+    vuint16m4_t wbl16 = rvv_bilinear_weight_m4 (wbl, vl);
+    vuint16m4_t wbr16 = rvv_bilinear_weight_m4 (wbr, vl);
+    vuint16m4_t lo16    = rvv_bilinear_channel_m4 (tl, tr, bl, br, wtl16, wtr16,
+						   wbl16, wbr16, FALSE, vl);
+    vuint16m4_t hi16    = rvv_bilinear_channel_m4 (tl, tr, bl, br, wtl16, wtr16,
+						   wbl16, wbr16, TRUE, vl);
+    vuint16m4_t pixel16 = __riscv_vor_vv_u16m4 (
+	lo16, __riscv_vsll_vx_u16m4 (hi16, 8, vl2), vl2);
+
+    return __riscv_vreinterpret_v_u16m4_u32m4 (pixel16);
+}
+
+static uint32_t *
+rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
+				 const uint32_t *mask)
+{
+    pixman_image_t *image     = iter->image;
+    bits_image_t   *bits      = &image->bits;
+    uint32_t       *base      = bits->bits;
+    int             rowstride = bits->rowstride;
+    pixman_bool_t   flipped   = bits->rowstride < 0;
+    pixman_bool_t   narrow_offsets;
+    pixman_vector_t v;
+    pixman_fixed_t  x, y, ux, uy;
+    int             i;
+
+    COMPILE_TIME_ASSERT (BILINEAR_INTERPOLATION_BITS < 8);
+
+    v.vector[0] = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
+    v.vector[1] = pixman_int_to_fixed (iter->y++) + pixman_fixed_1 / 2;
+    v.vector[2] = pixman_fixed_1;
+
+    if (!pixman_transform_point_3d (image->common.transform, &v))
+    {
+	memset (iter->buffer, 0, (size_t)iter->width * sizeof (uint32_t));
+	_pixman_log_error (FUNC, "Bad matrix, skipping bilinear fetch\n");
+	return iter->buffer;
+    }
+
+    ux = image->common.transform->matrix[0][0];
+    uy = image->common.transform->matrix[1][0];
+    x  = v.vector[0];
+    y  = v.vector[1];
+
+    /* Indexed loads use unsigned byte offsets, so first move the base to the
+     * lowest address and then map logical rows to their physical rows. */
+    if (flipped)
+    {
+	base += (bits->height - 1) * rowstride;
+	rowstride = -rowstride;
+    }
+
+    /* The indexed-load offset is in bytes. FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR
+     * already guarantees both taps are in bounds, so use the faster 32-bit
+     * gather only when every pixel in the image is representable; externally
+     * allocated images can otherwise span more than 4 GiB. */
+    narrow_offsets =
+	(uint64_t)(bits->height - 1) * (uint32_t)rowstride +
+		(uint32_t)(bits->width - 1) <=
+	    UINT32_MAX / sizeof (uint32_t);
+
+    for (i = 0; i < iter->width;)
+    {
+	size_t      vl;
+	vuint32m4_t lane_u;
+	vuint32m4_t tl, tr, bl, br, dx, dy, idx, idy;
+	vuint32m4_t wbr, wtr, wbl, wtl, pixel;
+	vint32m4_t  lane, vx, vy, x1, y1;
+
+	vl     = __riscv_vsetvl_e32m4 (iter->width - i);
+	lane_u = __riscv_vid_v_u32m4 (vl);
+	lane   = __riscv_vreinterpret_v_u32m4_i32m4 (lane_u);
+	vx     = __riscv_vadd_vx_i32m4 (__riscv_vmul_vx_i32m4 (lane, ux, vl),
+					x - pixman_fixed_1 / 2, vl);
+	vy     = __riscv_vadd_vx_i32m4 (__riscv_vmul_vx_i32m4 (lane, uy, vl),
+					y - pixman_fixed_1 / 2, vl);
+	x1     = __riscv_vsra_vx_i32m4 (vx, 16, vl);
+	y1     = __riscv_vsra_vx_i32m4 (vy, 16, vl);
+
+	if (flipped)
+	    y1 = __riscv_vrsub_vx_i32m4 (y1, bits->height - 1, vl);
+
+	rvv_bilinear_load_m4 (base, y1, x1, rowstride, flipped,
+			      narrow_offsets, &tl, &tr, &bl, &br, vl);
+	dx = __riscv_vand_vx_u32m4 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (
+		__riscv_vsra_vx_i32m4 (
+		    vx, 16 - BILINEAR_INTERPOLATION_BITS, vl)),
+	    BILINEAR_INTERPOLATION_RANGE - 1, vl);
+	dy = __riscv_vand_vx_u32m4 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (
+		__riscv_vsra_vx_i32m4 (
+		    vy, 16 - BILINEAR_INTERPOLATION_BITS, vl)),
+	    BILINEAR_INTERPOLATION_RANGE - 1, vl);
+	idx = __riscv_vrsub_vx_u32m4 (
+	    dx, BILINEAR_INTERPOLATION_RANGE, vl);
+	idy = __riscv_vrsub_vx_u32m4 (
+	    dy, BILINEAR_INTERPOLATION_RANGE, vl);
+	wbr = __riscv_vmul_vv_u32m4 (dx, dy, vl);
+	wtr = __riscv_vmul_vv_u32m4 (dx, idy, vl);
+	wbl = __riscv_vmul_vv_u32m4 (idx, dy, vl);
+	wtl = __riscv_vmul_vv_u32m4 (idx, idy, vl);
+
+	pixel = rvv_bilinear_blend_m4 (
+	    tl, tr, bl, br, wtl, wtr, wbl, wbr, vl);
+
+	__riscv_vse32_v_u32m4 (iter->buffer + i, pixel, vl);
+
+	x = (pixman_fixed_t)((int64_t)x + (int64_t)ux * vl);
+	y = (pixman_fixed_t)((int64_t)y + (int64_t)uy * vl);
+	i += vl;
+    }
+
+    return iter->buffer;
+}
+
+// clang-format off
 static const pixman_iter_info_t rvv_iters[] = {
-    {PIXMAN_r5g6b5, IMAGE_FLAGS, ITER_NARROW | ITER_SRC,
-     _pixman_iter_init_bits_stride, rvv_fetch_r5g6b5, NULL},
+    { PIXMAN_r5g6b5,
+      (FAST_PATH_STANDARD_FLAGS                 |
+       FAST_PATH_ID_TRANSFORM                   |
+       FAST_PATH_BITS_IMAGE                     |
+       FAST_PATH_SAMPLES_COVER_CLIP_NEAREST),
+      ITER_NARROW | ITER_SRC,
+      _pixman_iter_init_bits_stride, rvv_fetch_r5g6b5, NULL
+    },
+    /* A scale transform also matches the affine flags below, so this
+     * row-cached entry MUST come first; reordering would silently route
+     * scale sources back onto the four-gather path. */
+    { PIXMAN_a8r8g8b8,
+      (FAST_PATH_STANDARD_FLAGS                 |
+       FAST_PATH_SCALE_TRANSFORM                |
+       FAST_PATH_BILINEAR_FILTER                |
+       FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
+      ITER_NARROW | ITER_SRC,
+      _pixman_bilinear_cover_iter_init,
+      NULL, NULL
+    },
+    { PIXMAN_a8r8g8b8,
+      (FAST_PATH_STANDARD_FLAGS                 |
+       FAST_PATH_HAS_TRANSFORM                  |
+       FAST_PATH_AFFINE_TRANSFORM               |
+       FAST_PATH_BILINEAR_FILTER                |
+       FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_bilinear_affine_cover, NULL
+    },
     {PIXMAN_null},
 };
 
-// clang-format off
 static const pixman_fast_path_t rvv_fast_paths[] = {
     PIXMAN_STD_FAST_PATH (OVER, solid, a8, r5g6b5, rvv_composite_over_n_8_0565),
     PIXMAN_STD_FAST_PATH (OVER, solid, a8, b5g6r5, rvv_composite_over_n_8_0565),

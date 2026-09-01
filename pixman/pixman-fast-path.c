@@ -2435,8 +2435,9 @@ bilinear_cover_iter_fini (pixman_iter_t *iter)
     free (iter->data);
 }
 
-static void
-fast_bilinear_cover_iter_init (pixman_iter_t *iter, const pixman_iter_info_t *iter_info)
+void
+_pixman_bilinear_cover_iter_init (pixman_iter_t *iter,
+				  const pixman_iter_info_t *iter_info)
 {
     int width = iter->width;
     bilinear_info_t *info;
@@ -3189,7 +3190,7 @@ static const pixman_iter_info_t fast_iters[] =
        FAST_PATH_BILINEAR_FILTER		|
        FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
       ITER_NARROW | ITER_SRC,
-      fast_bilinear_cover_iter_init,
+      _pixman_bilinear_cover_iter_init,
       NULL, NULL
     },
 
