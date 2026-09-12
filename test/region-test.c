@@ -32,6 +32,40 @@ main ()
 	0xffff
     };
 
+    /* An empty intersection used to leave a degenerate one-box region. */
+    for (i = 0; i < 2; i++)
+    {
+	for (j = 0; j < 2; j++)
+	{
+	    pixman_region16_t  r16;
+	    pixman_region64f_t rf;
+
+	    pixman_region_init_rect (&r16, -10, -10, 20, 20);
+	    pixman_region_intersect_rect (&r16, &r16, 0, 0, i, j);
+	    assert (pixman_region_not_empty (&r16) == (i && j));
+	    assert (pixman_region_n_rects (&r16) == (i && j));
+	    pixman_region_fini (&r16);
+
+	    pixman_region32_init_rect (&r1, -10, -10, 20, 20);
+	    pixman_region32_intersect_rect (&r1, &r1, 0, 0, i, j);
+	    assert (pixman_region32_not_empty (&r1) == (i && j));
+	    assert (pixman_region32_n_rects (&r1) == (i && j));
+	    pixman_region32_fini (&r1);
+
+	    pixman_region64f_init_rect (&rf, -10, -10, 20, 20);
+	    pixman_region64f_intersect_rect (&rf, &rf, 0, 0, i, j);
+	    assert (pixman_region64f_not_empty (&rf) == (i && j));
+	    assert (pixman_region64f_n_rects (&rf) == (i && j));
+	    pixman_region64f_fini (&rf);
+
+	    pixman_region64f_init_rectf (&rf, -10.5, -10.5, 20.5, 20.5);
+	    pixman_region64f_intersect_rectf (&rf, &rf, 0.5, 0.5, i, j);
+	    assert (pixman_region64f_not_empty (&rf) == (i && j));
+	    assert (pixman_region64f_n_rects (&rf) == (i && j));
+	    pixman_region64f_fini (&rf);
+	}
+    }
+
     prng_srand (0);
 
     /* This used to go into an infinite loop before pixman-region.c

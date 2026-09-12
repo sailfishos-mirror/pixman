@@ -1358,11 +1358,7 @@ PREFIX(_intersect_rect) (region_type_t *dest,
 {
     region_type_t region;
 
-    region.data = NULL;
-    region.extents.x1 = x;
-    region.extents.y1 = y;
-    region.extents.x2 = x + width;
-    region.extents.y2 = y + height;
+    PREFIX (_init_rect) (&region, x, y, width, height);
 
     return PREFIX(_intersect) (dest, source, &region);
 }
@@ -1376,11 +1372,7 @@ PREFIX(_intersect_rectf) (region_type_t *dest,
 {
     region_type_t region;
 
-    region.data = NULL;
-    region.extents.x1 = x;
-    region.extents.y1 = y;
-    region.extents.x2 = x + width;
-    region.extents.y2 = y + height;
+    PREFIX (_init_rectf) (&region, x, y, width, height);
 
     return PREFIX(_intersect) (dest, source, &region);
 }
