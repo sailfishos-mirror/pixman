@@ -3020,6 +3020,27 @@ rvv_blt (pixman_implementation_t *__restrict__ imp,
 }
 
 static uint32_t *
+rvv_fetch_a8 (pixman_iter_t *iter, const uint32_t *mask)
+{
+    int32_t        w   = iter->width;
+    uint32_t      *dst = iter->buffer;
+    const uint8_t *src = iter->bits;
+
+    iter->bits += iter->stride;
+
+    RVV_FOREACH_2 (w, vl, e8m1, src, dst)
+    {
+	vuint8m1_t  a   = __riscv_vle8_v_u8m1 (src, vl);
+	vuint32m4_t out = __riscv_vzext_vf4_u32m4 (a, vl);
+
+	out = __riscv_vsll_vx_u32m4 (out, 24, vl);
+	__riscv_vse32 (dst, out, vl);
+    }
+
+    return iter->buffer;
+}
+
+static uint32_t *
 rvv_fetch_r5g6b5 (pixman_iter_t *iter, const uint32_t *mask)
 {
     int32_t         w   = iter->width;
@@ -3832,6 +3853,12 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
 }
 
 // clang-format off
+#define IMAGE_FLAGS                                                     \
+    (FAST_PATH_STANDARD_FLAGS           |                               \
+     FAST_PATH_ID_TRANSFORM             |                               \
+     FAST_PATH_BITS_IMAGE               |                               \
+     FAST_PATH_SAMPLES_COVER_CLIP_NEAREST)
+
 #define AFFINE_BILINEAR_FLAGS                                           \
     (FAST_PATH_STANDARD_FLAGS           |                               \
      FAST_PATH_BITS_IMAGE               |                               \
@@ -3865,11 +3892,11 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
     (AFFINE_NEAREST_COVER_FLAGS | FAST_PATH_SCALE_TRANSFORM)
 
 static const pixman_iter_info_t rvv_iters[] = {
-    { PIXMAN_r5g6b5,
-      (FAST_PATH_STANDARD_FLAGS                 |
-       FAST_PATH_ID_TRANSFORM                   |
-       FAST_PATH_BITS_IMAGE                     |
-       FAST_PATH_SAMPLES_COVER_CLIP_NEAREST),
+    { PIXMAN_a8, IMAGE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      _pixman_iter_init_bits_stride, rvv_fetch_a8, NULL
+    },
+    { PIXMAN_r5g6b5, IMAGE_FLAGS,
       ITER_NARROW | ITER_SRC,
       _pixman_iter_init_bits_stride, rvv_fetch_r5g6b5, NULL
     },
