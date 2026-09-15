@@ -957,6 +957,27 @@ rvv_UN8_MUL_UN8_vx_m4 (const vuint8m4_t x, const uint8_t a, size_t vl)
     __rvv_UN8x4_MUL_UN8x4_vv (m4, x, a, vl)
 
 /*
+ * Same result as rvv_UN8x4_MUL_UN8x4_vv_m4 (), but adds ONE_HALF after
+ * vwmulu instead of using it as the vwmaccu accumulator. vwmaccu overwrites
+ * the accumulator, so GCC copies the m8 splat before every use. Only use this
+ * where those copies show up; elsewhere it is slower.
+ */
+static force_inline vuint32m4_t
+rvv_UN8x4_MUL_UN8x4_vv_low_pressure_m4 (const vuint32m4_t x,
+					const vuint32m4_t a,
+					size_t            vl)
+{
+    size_t      vl4        = vl * 4;
+    vuint16m8_t mul_higher = __riscv_vadd (
+	__riscv_vwmulu (RVV_U32_U8x4_m4 (x), RVV_U32_U8x4_m4 (a), vl4),
+	ONE_HALF, vl4);
+    vuint16m8_t mul_lower = __riscv_vsrl (mul_higher, G_SHIFT, vl4);
+
+    return RVV_U8x4_U32_m4 (__riscv_vnsrl (
+	__riscv_vadd (mul_higher, mul_lower, vl4), G_SHIFT, vl4));
+}
+
+/*
 * a_c = a (broadcast to all components)
 */
 
@@ -2442,14 +2463,15 @@ rvv_composite_over_n_8888_8888_ca (pixman_implementation_t *__restrict__ imp,
 
 	RVV_FOREACH_2 (width, vl, e32m4, mask, dst)
 	{
-	    vuint32m4_t m = __riscv_vle32_v_u32m4 (mask, vl);
-	    __riscv_vse32 (
-		dst,
-		rvv_UN8x4_MUL_UN8x4_ADD_UN8x4_vvv_m4 (
-		    __riscv_vle32_v_u32m4 (dst, vl),
-		    __riscv_vnot (rvv_UN8x4_MUL_UN8_vx_m4 (m, srca, vl), vl),
-		    rvv_UN8x4_MUL_UN8x4_vv_m4 (m, vsrc, vl), vl),
-		vl);
+	    vuint32m4_t m  = __riscv_vle32_v_u32m4 (mask, vl);
+	    vuint32m4_t ma = __riscv_vnot (
+		rvv_UN8x4_MUL_UN8_vx_m4 (m, srca, vl), vl);
+	    vuint32m4_t d = rvv_UN8x4_MUL_UN8x4_vv_low_pressure_m4 (
+		__riscv_vle32_v_u32m4 (dst, vl), ma, vl);
+	    vuint32m4_t s = rvv_UN8x4_MUL_UN8x4_vv_low_pressure_m4 (m, vsrc,
+								    vl);
+
+	    __riscv_vse32 (dst, rvv_UN8x4_ADD_UN8x4_vv_m4 (d, s, vl), vl);
 	}
     }
 }
@@ -2485,19 +2507,20 @@ rvv_composite_over_n_8888_0565_ca (pixman_implementation_t *__restrict__ imp,
 
 	RVV_FOREACH_2 (width, vl, e32m4, mask, dst)
 	{
-	    vuint32m4_t ma = __riscv_vle32_v_u32m4 (mask, vl);
+	    vuint32m4_t m  = __riscv_vle32_v_u32m4 (mask, vl);
+	    vuint32m4_t ma = __riscv_vnot (
+		rvv_UN8x4_MUL_UN8_vx_m4 (m, srca, vl), vl);
+	    vuint32m4_t d = rvv_UN8x4_MUL_UN8x4_vv_low_pressure_m4 (
+		rvv_convert_0565_to_0888_m4 (__riscv_vle16_v_u16m2 (dst, vl),
+					     vl),
+		ma, vl);
+	    vuint32m4_t s = rvv_UN8x4_MUL_UN8x4_vv_low_pressure_m4 (m, vsrc,
+								    vl);
 
-	    __riscv_vse16 (
-		dst,
-		rvv_convert_8888_to_0565_m2 (
-		    rvv_UN8x4_MUL_UN8x4_ADD_UN8x4_vvv_m4 (
-			rvv_convert_0565_to_0888_m4 (
-			    __riscv_vle16_v_u16m2 (dst, vl), vl),
-			__riscv_vnot (rvv_UN8x4_MUL_UN8_vx_m4 (ma, srca, vl),
-				      vl),
-			rvv_UN8x4_MUL_UN8x4_vv_m4 (ma, vsrc, vl), vl),
-		    vl),
-		vl);
+	    __riscv_vse16 (dst,
+			   rvv_convert_8888_to_0565_m2 (
+			       rvv_UN8x4_ADD_UN8x4_vv_m4 (d, s, vl), vl),
+			   vl);
 	}
     }
 }
