@@ -725,6 +725,28 @@ uint32_t *
 _pixman_bits_image_fetch_bilinear_no_repeat_8888 (pixman_iter_t  *iter,
 						  const uint32_t *mask);
 
+typedef struct
+{
+    int       y;
+    uint64_t *buffer;
+} pixman_bilinear_line_t;
+
+typedef struct
+{
+    pixman_bilinear_line_t lines[2];
+    pixman_fixed_t         y;
+    pixman_fixed_t         x;
+    uint64_t               data[1];
+} pixman_bilinear_info_t;
+
+void
+_pixman_fetch_bilinear_horizontal (bits_image_t           *image,
+				   pixman_bilinear_line_t *line,
+				   int                     y,
+				   pixman_fixed_t          x,
+				   pixman_fixed_t          ux,
+				   int                     n);
+
 /* These "formats" all have depth 0, so they
  * will never clash with any real ones
  */

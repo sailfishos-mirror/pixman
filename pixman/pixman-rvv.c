@@ -3083,6 +3083,109 @@ rvv_fetch_r5g6b5 (pixman_iter_t *iter, const uint32_t *mask)
     return iter->buffer;
 }
 
+static force_inline vuint32m2_t
+rvv_bilinear_vertical_m2 (vuint32m2_t top,
+			  vuint32m2_t bottom,
+			  uint32_t    dist_y,
+			  size_t      vl)
+{
+    /* Unsigned wraparound in bottom - top cancels in the multiply-add. */
+    return __riscv_vsrl_vx_u32m2 (
+	__riscv_vmacc_vx_u32m2 (__riscv_vsll_vx_u32m2 (top, 8, vl), dist_y,
+				__riscv_vsub_vv_u32m2 (bottom, top, vl), vl),
+	16, vl);
+}
+
+static uint32_t *
+rvv_fetch_bilinear_cover (pixman_iter_t *iter, const uint32_t *mask)
+{
+    pixman_bilinear_info_t *info = iter->data;
+    pixman_bilinear_line_t *line0, *line1;
+    pixman_fixed_t          ux;
+    int                     y0, y1;
+    int32_t                 dist_y;
+    int                     i;
+
+    COMPILE_TIME_ASSERT (BILINEAR_INTERPOLATION_BITS < 8);
+
+    ux = iter->image->common.transform->matrix[0][0];
+    y0 = pixman_fixed_to_int (info->y);
+    y1 = y0 + 1;
+
+    line0 = &info->lines[y0 & 1];
+    line1 = &info->lines[y1 & 1];
+
+    if (line0->y != y0)
+    {
+	_pixman_fetch_bilinear_horizontal (&iter->image->bits, line0, y0,
+					   info->x, ux, iter->width);
+    }
+
+    if (line1->y != y1)
+    {
+	_pixman_fetch_bilinear_horizontal (&iter->image->bits, line1, y1,
+					   info->x, ux, iter->width);
+    }
+
+    dist_y = pixman_fixed_to_bilinear_weight (info->y);
+    dist_y <<= 8 - BILINEAR_INTERPOLATION_BITS;
+
+    /* On little-endian RV64, rb is the low word of each cached u64,
+     * and ag is the high word. */
+    for (i = 0; i < iter->width;)
+    {
+	size_t vl = __riscv_vsetvl_e32m2 (iter->width - i);
+	vuint32m2x2_t top = __riscv_vlseg2e32_v_u32m2x2 (
+	    (const uint32_t *)(line0->buffer + i), vl);
+	vuint32m2x2_t bot = __riscv_vlseg2e32_v_u32m2x2 (
+	    (const uint32_t *)(line1->buffer + i), vl);
+	vuint32m2_t top_rb = __riscv_vget_v_u32m2x2_u32m2 (top, 0);
+	vuint32m2_t bot_rb = __riscv_vget_v_u32m2x2_u32m2 (bot, 0);
+	vuint32m2_t top_ag = __riscv_vget_v_u32m2x2_u32m2 (top, 1);
+	vuint32m2_t bot_ag = __riscv_vget_v_u32m2x2_u32m2 (bot, 1);
+	vuint32m2_t a = rvv_bilinear_vertical_m2 (
+	    __riscv_vsrl_vx_u32m2 (top_ag, 16, vl),
+	    __riscv_vsrl_vx_u32m2 (bot_ag, 16, vl), dist_y, vl);
+	vuint32m2_t r = rvv_bilinear_vertical_m2 (
+	    __riscv_vsrl_vx_u32m2 (top_rb, 16, vl),
+	    __riscv_vsrl_vx_u32m2 (bot_rb, 16, vl), dist_y, vl);
+	vuint32m2_t g = rvv_bilinear_vertical_m2 (
+	    __riscv_vand_vx_u32m2 (top_ag, 0xffff, vl),
+	    __riscv_vand_vx_u32m2 (bot_ag, 0xffff, vl), dist_y, vl);
+	vuint32m2_t b = rvv_bilinear_vertical_m2 (
+	    __riscv_vand_vx_u32m2 (top_rb, 0xffff, vl),
+	    __riscv_vand_vx_u32m2 (bot_rb, 0xffff, vl), dist_y, vl);
+	vuint32m2_t out;
+
+	out = __riscv_vor_vv_u32m2 (__riscv_vsll_vx_u32m2 (a, 24, vl),
+				    __riscv_vsll_vx_u32m2 (r, 16, vl), vl);
+	out = __riscv_vor_vv_u32m2 (out, __riscv_vsll_vx_u32m2 (g, 8, vl), vl);
+	out = __riscv_vor_vv_u32m2 (out, b, vl);
+	__riscv_vse32 (iter->buffer + i, out, vl);
+	i += vl;
+    }
+
+    info->y += iter->image->common.transform->matrix[1][1];
+    return iter->buffer;
+}
+
+/* The K3 width sweep first showed a clear RVV gain at 12 pixels;
+ * keep shorter rows on the generic path. */
+#define BILINEAR_COVER_8888_SCALAR_MAX_WIDTH 11
+
+static void
+rvv_bilinear_cover_iter_init (pixman_iter_t            *iter,
+			      const pixman_iter_info_t *iter_info)
+{
+    _pixman_bilinear_cover_iter_init (iter, iter_info);
+
+    if (iter->width > BILINEAR_COVER_8888_SCALAR_MAX_WIDTH &&
+	iter->get_scanline != _pixman_iter_get_scanline_noop)
+    {
+	iter->get_scanline = rvv_fetch_bilinear_cover;
+    }
+}
+
 static force_inline void
 rvv_bilinear_load_m4 (const uint32_t *base,
 		      vint32m4_t      y,
@@ -4129,7 +4232,7 @@ static const pixman_iter_info_t rvv_iters[] = {
        FAST_PATH_BILINEAR_FILTER                |
        FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR),
       ITER_NARROW | ITER_SRC,
-      _pixman_bilinear_cover_iter_init,
+      rvv_bilinear_cover_iter_init,
       NULL, NULL
     },
     { PIXMAN_x8r8g8b8, SCALE_BILINEAR_COVER_FLAGS,
