@@ -1,7 +1,44 @@
 #include <assert.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "utils.h"
+
+/* Adding an unsigned size to a negative origin used to wrap before the
+ * result was stored in a double.
+ */
+static void
+test_region64f_negative_origin (void)
+{
+    pixman_region64f_t rf, expected;
+    pixman_box64f_t *box;
+
+    pixman_region64f_init_rectf (&expected, -10, -10, 5, 5);
+    pixman_region64f_init_rect (&rf, -10, -10, 5, 5);
+    assert (pixman_region64f_equal (&rf, &expected));
+    pixman_region64f_fini (&rf);
+
+    pixman_region64f_init_rectf (&rf, -20, -20, 40, 40);
+    assert (pixman_region64f_intersect_rect (&rf, &rf, -10, -10, 5, 5));
+    assert (pixman_region64f_equal (&rf, &expected));
+    pixman_region64f_fini (&rf);
+
+    pixman_region64f_init (&rf);
+    assert (pixman_region64f_union_rect (&rf, &rf, -10, -10, 5, 5));
+    assert (pixman_region64f_equal (&rf, &expected));
+    pixman_region64f_fini (&rf);
+    pixman_region64f_fini (&expected);
+
+    pixman_region64f_init_rect (&rf, -10, -10, 0, 1);
+    assert (pixman_region64f_n_rects (&rf) == 0);
+    pixman_region64f_fini (&rf);
+
+    pixman_region64f_init_rect (&rf, -10, -10, UINT_MAX, 1);
+    box = pixman_region64f_extents (&rf);
+    assert (box->x1 == -10);
+    assert (box->x2 == (double)UINT_MAX - 10);
+    pixman_region64f_fini (&rf);
+}
 
 int
 main ()
@@ -65,6 +102,8 @@ main ()
 	    pixman_region64f_fini (&rf);
 	}
     }
+
+    test_region64f_negative_origin ();
 
     prng_srand (0);
 

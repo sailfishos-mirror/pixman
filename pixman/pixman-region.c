@@ -387,8 +387,8 @@ PREFIX (_init_rect) (region_type_t *	region,
 {
     region->extents.x1 = x;
     region->extents.y1 = y;
-    region->extents.x2 = x + width;
-    region->extents.y2 = y + height;
+    region->extents.x2 = (primitive_t)x + width;
+    region->extents.y2 = (primitive_t)y + height;
 
     if (!GOOD_RECT (&region->extents))
     {
@@ -1392,8 +1392,8 @@ PREFIX (_union_rect) (region_type_t *dest,
 
     region.extents.x1 = x;
     region.extents.y1 = y;
-    region.extents.x2 = x + width;
-    region.extents.y2 = y + height;
+    region.extents.x2 = (primitive_t)x + width;
+    region.extents.y2 = (primitive_t)y + height;
 
     if (!GOOD_RECT (&region.extents))
     {
