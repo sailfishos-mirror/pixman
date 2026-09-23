@@ -3289,6 +3289,37 @@ rvv_bilinear_blend_m4 (vuint32m4_t tl,
 }
 
 static force_inline void
+rvv_bilinear_masks_m4 (vint32m4_t x1,
+		       vint32m4_t y1,
+		       int        width,
+		       int        height,
+		       vbool8_t  *mtl,
+		       vbool8_t  *mtr,
+		       vbool8_t  *mbl,
+		       vbool8_t  *mbr,
+		       size_t     vl)
+{
+    vint32m4_t x2, y2;
+    vbool8_t   x1ok, x2ok, y1ok, y2ok;
+
+    x2   = __riscv_vadd_vx_i32m4 (x1, 1, vl);
+    y2   = __riscv_vadd_vx_i32m4 (y1, 1, vl);
+    x1ok = __riscv_vmsltu_vx_u32m4_b8 (__riscv_vreinterpret_v_i32m4_u32m4 (x1),
+				       width, vl);
+    x2ok = __riscv_vmsltu_vx_u32m4_b8 (__riscv_vreinterpret_v_i32m4_u32m4 (x2),
+				       width, vl);
+    y1ok = __riscv_vmsltu_vx_u32m4_b8 (__riscv_vreinterpret_v_i32m4_u32m4 (y1),
+				       height, vl);
+    y2ok = __riscv_vmsltu_vx_u32m4_b8 (__riscv_vreinterpret_v_i32m4_u32m4 (y2),
+				       height, vl);
+
+    *mtl = __riscv_vmand_mm_b8 (x1ok, y1ok, vl);
+    *mtr = __riscv_vmand_mm_b8 (x2ok, y1ok, vl);
+    *mbl = __riscv_vmand_mm_b8 (x1ok, y2ok, vl);
+    *mbr = __riscv_vmand_mm_b8 (x2ok, y2ok, vl);
+}
+
+static force_inline void
 rvv_bilinear_weights_m4 (vint32m4_t   vx,
 			 vint32m4_t   vy,
 			 vuint32m4_t *wtl,
@@ -3459,8 +3490,8 @@ rvv_fetch_bilinear_affine_r5g6b5 (pixman_iter_t  *iter,
     {
 	size_t      vl;
 	vuint32m4_t lane_u;
-	vint32m4_t  lane, vx, vy, x1, y1, x2, y2, yindex;
-	vbool8_t    x1ok, x2ok, y1ok, y2ok, mtl, mtr, mbl, mbr;
+	vint32m4_t  lane, vx, vy, x1, y1, yindex;
+	vbool8_t    mtl, mtr, mbl, mbr;
 	vuint32m4_t tl, tr, bl, br;
 	vuint32m4_t wbr, wtr, wbl, wtl, pixel;
 
@@ -3475,21 +3506,9 @@ rvv_fetch_bilinear_affine_r5g6b5 (pixman_iter_t  *iter,
 	    y - pixman_fixed_1 / 2, vl);
 	x1 = __riscv_vsra_vx_i32m4 (vx, 16, vl);
 	y1 = __riscv_vsra_vx_i32m4 (vy, 16, vl);
-	x2 = __riscv_vadd_vx_i32m4 (x1, 1, vl);
-	y2 = __riscv_vadd_vx_i32m4 (y1, 1, vl);
 
-	x1ok = __riscv_vmsltu_vx_u32m4_b8 (
-	    __riscv_vreinterpret_v_i32m4_u32m4 (x1), bits->width, vl);
-	x2ok = __riscv_vmsltu_vx_u32m4_b8 (
-	    __riscv_vreinterpret_v_i32m4_u32m4 (x2), bits->width, vl);
-	y1ok = __riscv_vmsltu_vx_u32m4_b8 (
-	    __riscv_vreinterpret_v_i32m4_u32m4 (y1), bits->height, vl);
-	y2ok = __riscv_vmsltu_vx_u32m4_b8 (
-	    __riscv_vreinterpret_v_i32m4_u32m4 (y2), bits->height, vl);
-	mtl = __riscv_vmand_mm_b8 (x1ok, y1ok, vl);
-	mtr = __riscv_vmand_mm_b8 (x2ok, y1ok, vl);
-	mbl = __riscv_vmand_mm_b8 (x1ok, y2ok, vl);
-	mbr = __riscv_vmand_mm_b8 (x2ok, y2ok, vl);
+	rvv_bilinear_masks_m4 (x1, y1, bits->width, bits->height, &mtl, &mtr,
+			       &mbl, &mbr, vl);
 
 	yindex = flipped ? __riscv_vrsub_vx_i32m4 (
 			       y1, bits->height - 1, vl)
@@ -3650,6 +3669,8 @@ rvv_fetch_nearest_scale_r5g6b5_scalar (pixman_iter_t  *iter,
 
 #define NEAREST_SCALE_8888_SCALAR_MAX_WIDTH 32
 
+#define BILINEAR_GATHER_8888_SCALAR_MAX_WIDTH 53
+
 static uint32_t *
 rvv_fetch_nearest_scale_8888_scalar (pixman_iter_t *iter, const uint32_t *mask)
 {
@@ -3696,27 +3717,38 @@ rvv_fetch_nearest_scale_8888_scalar (pixman_iter_t *iter, const uint32_t *mask)
 }
 
 static void
-rvv_nearest_scale_iter_init (pixman_iter_t            *iter,
-			     const pixman_iter_info_t *iter_info)
+rvv_scale_iter_init (pixman_iter_t *iter, const pixman_iter_info_t *iter_info)
 {
     pixman_iter_get_scanline_t scalar_fetch;
     int                        max_width;
 
-    switch (iter_info->format)
+    if (iter_info->image_flags & FAST_PATH_BILINEAR_FILTER)
     {
-	case PIXMAN_r5g6b5:
-	    scalar_fetch = rvv_fetch_nearest_scale_r5g6b5_scalar;
-	    max_width    = NEAREST_SCALE_R5G6B5_SCALAR_MAX_WIDTH;
-	    break;
-
-	case PIXMAN_a8r8g8b8:
-	case PIXMAN_x8r8g8b8:
-	    scalar_fetch = rvv_fetch_nearest_scale_8888_scalar;
-	    max_width    = NEAREST_SCALE_8888_SCALAR_MAX_WIDTH;
-	    break;
-
-	default:
+	if (iter_info->format != PIXMAN_a8r8g8b8 &&
+	    iter_info->format != PIXMAN_x8r8g8b8)
 	    return;
+
+	scalar_fetch = _pixman_bits_image_fetch_bilinear_no_repeat_8888;
+	max_width    = BILINEAR_GATHER_8888_SCALAR_MAX_WIDTH;
+    }
+    else
+    {
+	switch (iter_info->format)
+	{
+	    case PIXMAN_r5g6b5:
+		scalar_fetch = rvv_fetch_nearest_scale_r5g6b5_scalar;
+		max_width    = NEAREST_SCALE_R5G6B5_SCALAR_MAX_WIDTH;
+		break;
+
+	    case PIXMAN_a8r8g8b8:
+	    case PIXMAN_x8r8g8b8:
+		scalar_fetch = rvv_fetch_nearest_scale_8888_scalar;
+		max_width    = NEAREST_SCALE_8888_SCALAR_MAX_WIDTH;
+		break;
+
+	    default:
+		return;
+	}
     }
 
     /* Direct loads win until the gather setup is amortized. */
@@ -3929,12 +3961,12 @@ static const pixman_iter_info_t rvv_iters[] = {
      * route short scale rows onto the gather path. */
     { PIXMAN_r5g6b5, SCALE_NEAREST_NONE_FLAGS,
       ITER_NARROW | ITER_SRC,
-      rvv_nearest_scale_iter_init,
+      rvv_scale_iter_init,
       rvv_fetch_nearest_affine_r5g6b5, NULL
     },
     { PIXMAN_r5g6b5, SCALE_NEAREST_COVER_FLAGS,
       ITER_NARROW | ITER_SRC,
-      rvv_nearest_scale_iter_init,
+      rvv_scale_iter_init,
       rvv_fetch_nearest_affine_r5g6b5, NULL
     },
     { PIXMAN_r5g6b5, AFFINE_NEAREST_COVER_FLAGS,
@@ -3963,12 +3995,12 @@ static const pixman_iter_info_t rvv_iters[] = {
     },
     { PIXMAN_a8r8g8b8, SCALE_NEAREST_NONE_FLAGS,
       ITER_NARROW | ITER_SRC,
-      rvv_nearest_scale_iter_init,
+      rvv_scale_iter_init,
       rvv_fetch_nearest_affine_8888, NULL
     },
     { PIXMAN_x8r8g8b8, SCALE_NEAREST_NONE_FLAGS,
       ITER_NARROW | ITER_SRC,
-      rvv_nearest_scale_iter_init,
+      rvv_scale_iter_init,
       rvv_fetch_nearest_affine_8888, NULL
     },
     {PIXMAN_null},

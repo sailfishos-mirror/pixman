@@ -2484,9 +2484,9 @@ fail:
     iter->fini = NULL;
 }
 
-static uint32_t *
-bits_image_fetch_bilinear_no_repeat_8888 (pixman_iter_t *iter,
-					  const uint32_t *mask)
+uint32_t *
+_pixman_bits_image_fetch_bilinear_no_repeat_8888 (pixman_iter_t  *iter,
+						  const uint32_t *mask)
 {
 
     pixman_image_t * ima = iter->image;
@@ -3207,13 +3207,13 @@ static const pixman_iter_info_t fast_iters[] =
     { PIXMAN_a8r8g8b8,
       FAST_BILINEAR_FLAGS,
       ITER_NARROW | ITER_SRC,
-      NULL, bits_image_fetch_bilinear_no_repeat_8888, NULL
+      NULL, _pixman_bits_image_fetch_bilinear_no_repeat_8888, NULL
     },
 
     { PIXMAN_x8r8g8b8,
       FAST_BILINEAR_FLAGS,
       ITER_NARROW | ITER_SRC,
-      NULL, bits_image_fetch_bilinear_no_repeat_8888, NULL
+      NULL, _pixman_bits_image_fetch_bilinear_no_repeat_8888, NULL
     },
 
 #define GENERAL_BILINEAR_FLAGS						\

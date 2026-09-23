@@ -721,6 +721,10 @@ void
 _pixman_bilinear_cover_iter_init (pixman_iter_t *iter,
 				  const pixman_iter_info_t *info);
 
+uint32_t *
+_pixman_bits_image_fetch_bilinear_no_repeat_8888 (pixman_iter_t  *iter,
+						  const uint32_t *mask);
+
 /* These "formats" all have depth 0, so they
  * will never clash with any real ones
  */
