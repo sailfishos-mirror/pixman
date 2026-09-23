@@ -3120,6 +3120,84 @@ rvv_bilinear_load_m4 (const uint32_t *base,
 }
 
 static force_inline void
+rvv_bilinear_load_8888_masked_m4 (const uint32_t *base,
+				  vint32m4_t      y,
+				  vint32m4_t      x,
+				  int             rowstride,
+				  pixman_bool_t   flipped,
+				  pixman_bool_t   narrow_offsets,
+				  pixman_bool_t   has_alpha,
+				  vbool8_t        mtl,
+				  vbool8_t        mtr,
+				  vbool8_t        mbl,
+				  vbool8_t        mbr,
+				  vuint32m4_t    *tl,
+				  vuint32m4_t    *tr,
+				  vuint32m4_t    *bl,
+				  vuint32m4_t    *br,
+				  size_t          vl)
+{
+    vuint32m4_t zero = __riscv_vmv_v_x_u32m4 (0, vl);
+
+    if (narrow_offsets)
+    {
+	vint32m4_t index = __riscv_vadd_vv_i32m4 (
+	    __riscv_vmul_vx_i32m4 (y, rowstride, vl), x, vl);
+	vuint32m4_t top = __riscv_vsll_vx_u32m4 (
+	    __riscv_vreinterpret_v_i32m4_u32m4 (index), 2, vl);
+	vuint32m4_t bottom;
+	uint32_t    row_bytes = (uint32_t)rowstride * sizeof (uint32_t);
+
+	if (flipped)
+	    bottom = __riscv_vsub_vx_u32m4 (top, row_bytes, vl);
+	else
+	    bottom = __riscv_vadd_vx_u32m4 (top, row_bytes, vl);
+
+	*tl = __riscv_vluxei32_v_u32m4_mu (mtl, zero, base, top, vl);
+	*tr = __riscv_vluxei32_v_u32m4_mu (
+	    mtr, zero, base, __riscv_vadd_vx_u32m4 (top, sizeof (uint32_t), vl),
+	    vl);
+	*bl = __riscv_vluxei32_v_u32m4_mu (mbl, zero, base, bottom, vl);
+	*br = __riscv_vluxei32_v_u32m4_mu (
+	    mbr, zero, base,
+	    __riscv_vadd_vx_u32m4 (bottom, sizeof (uint32_t), vl), vl);
+    }
+    else
+    {
+	vint64m8_t y64   = __riscv_vwcvt_x_x_v_i64m8 (y, vl);
+	vint64m8_t x64   = __riscv_vwcvt_x_x_v_i64m8 (x, vl);
+	vint64m8_t index = __riscv_vadd_vv_i64m8 (
+	    __riscv_vmul_vx_i64m8 (y64, rowstride, vl), x64, vl);
+	vuint64m8_t top = __riscv_vsll_vx_u64m8 (
+	    __riscv_vreinterpret_v_i64m8_u64m8 (index), 2, vl);
+	vuint64m8_t bottom;
+	uint64_t    row_bytes = (uint64_t)rowstride * sizeof (uint32_t);
+
+	if (flipped)
+	    bottom = __riscv_vsub_vx_u64m8 (top, row_bytes, vl);
+	else
+	    bottom = __riscv_vadd_vx_u64m8 (top, row_bytes, vl);
+
+	*tl = __riscv_vluxei64_v_u32m4_mu (mtl, zero, base, top, vl);
+	*tr = __riscv_vluxei64_v_u32m4_mu (
+	    mtr, zero, base, __riscv_vadd_vx_u64m8 (top, sizeof (uint32_t), vl),
+	    vl);
+	*bl = __riscv_vluxei64_v_u32m4_mu (mbl, zero, base, bottom, vl);
+	*br = __riscv_vluxei64_v_u32m4_mu (
+	    mbr, zero, base,
+	    __riscv_vadd_vx_u64m8 (bottom, sizeof (uint32_t), vl), vl);
+    }
+
+    if (!has_alpha)
+    {
+	*tl = __riscv_vor_vx_u32m4_mu (mtl, zero, *tl, 0xff000000, vl);
+	*tr = __riscv_vor_vx_u32m4_mu (mtr, zero, *tr, 0xff000000, vl);
+	*bl = __riscv_vor_vx_u32m4_mu (mbl, zero, *bl, 0xff000000, vl);
+	*br = __riscv_vor_vx_u32m4_mu (mbr, zero, *br, 0xff000000, vl);
+    }
+}
+
+static force_inline void
 rvv_bilinear_load_0565_m4 (const uint16_t *base,
 			   vint32m4_t      y,
 			   vint32m4_t      x,
@@ -3440,6 +3518,82 @@ rvv_fetch_bilinear_affine_cover (pixman_iter_t  *iter,
 
 	pixel = rvv_bilinear_blend_m4 (
 	    tl, tr, bl, br, wtl, wtr, wbl, wbr, vl);
+
+	__riscv_vse32_v_u32m4 (iter->buffer + i, pixel, vl);
+
+	x = (pixman_fixed_t)((int64_t)x + (int64_t)ux * vl);
+	y = (pixman_fixed_t)((int64_t)y + (int64_t)uy * vl);
+	i += vl;
+    }
+
+    return iter->buffer;
+}
+
+static uint32_t *
+rvv_fetch_bilinear_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
+{
+    pixman_image_t *image     = iter->image;
+    bits_image_t   *bits      = &image->bits;
+    const uint32_t *base      = bits->bits;
+    int             rowstride = bits->rowstride;
+    pixman_bool_t   flipped   = rowstride < 0;
+    pixman_bool_t   narrow_offsets;
+    pixman_bool_t   has_alpha;
+    pixman_fixed_t  x, y, ux, uy;
+    int             i;
+
+    COMPILE_TIME_ASSERT (BILINEAR_INTERPOLATION_BITS < 8);
+
+    if (!rvv_transform_scanline_start (iter, &x, &y, &ux, &uy))
+	return iter->buffer;
+
+    has_alpha = PIXMAN_FORMAT_A (image->common.extended_format_code) != 0;
+
+    /* Indexed loads use unsigned byte offsets, so first move the base to the
+     * lowest address and then map logical rows to their physical rows. */
+    if (flipped)
+    {
+	base += (int64_t)(bits->height - 1) * rowstride;
+	rowstride = -rowstride;
+    }
+
+    /* The indexed-load offset is in bytes. Use the faster 32-bit gather only
+     * when every pixel in the image is representable; externally allocated
+     * images can otherwise span more than 4 GiB. */
+    narrow_offsets = (uint64_t)(bits->height - 1) * (uint32_t)rowstride +
+			 (uint32_t)(bits->width - 1) <=
+		     UINT32_MAX / sizeof (uint32_t);
+
+    for (i = 0; i < iter->width;)
+    {
+	size_t      vl;
+	vuint32m4_t lane_u;
+	vint32m4_t  lane, vx, vy, x1, y1, yindex;
+	vbool8_t    mtl, mtr, mbl, mbr;
+	vuint32m4_t tl, tr, bl, br;
+	vuint32m4_t wbr, wtr, wbl, wtl, pixel;
+
+	vl     = __riscv_vsetvl_e32m4 (iter->width - i);
+	lane_u = __riscv_vid_v_u32m4 (vl);
+	lane   = __riscv_vreinterpret_v_u32m4_i32m4 (lane_u);
+	vx     = __riscv_vadd_vx_i32m4 (__riscv_vmul_vx_i32m4 (lane, ux, vl),
+					x - pixman_fixed_1 / 2, vl);
+	vy     = __riscv_vadd_vx_i32m4 (__riscv_vmul_vx_i32m4 (lane, uy, vl),
+					y - pixman_fixed_1 / 2, vl);
+	x1     = __riscv_vsra_vx_i32m4 (vx, 16, vl);
+	y1     = __riscv_vsra_vx_i32m4 (vy, 16, vl);
+
+	rvv_bilinear_masks_m4 (x1, y1, bits->width, bits->height, &mtl, &mtr,
+			       &mbl, &mbr, vl);
+
+	yindex = flipped ? __riscv_vrsub_vx_i32m4 (y1, bits->height - 1, vl)
+			 : y1;
+	rvv_bilinear_load_8888_masked_m4 (
+	    base, yindex, x1, rowstride, flipped, narrow_offsets, has_alpha, mtl,
+	    mtr, mbl, mbr, &tl, &tr, &bl, &br, vl);
+	rvv_bilinear_weights_m4 (vx, vy, &wtl, &wtr, &wbl, &wbr, vl);
+
+	pixel = rvv_bilinear_blend_m4 (tl, tr, bl, br, wtl, wtr, wbl, wbr, vl);
 
 	__riscv_vse32_v_u32m4 (iter->buffer + i, pixel, vl);
 
@@ -3904,6 +4058,17 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
 #define AFFINE_BILINEAR_NONE_FLAGS                                      \
     (AFFINE_BILINEAR_FLAGS | FAST_PATH_NONE_REPEAT)
 
+#define SCALE_BILINEAR_FLAGS                                            \
+    (AFFINE_BILINEAR_FLAGS              |                               \
+     FAST_PATH_SCALE_TRANSFORM          |                               \
+     FAST_PATH_X_UNIT_POSITIVE)
+
+#define SCALE_BILINEAR_COVER_FLAGS                                      \
+    (SCALE_BILINEAR_FLAGS | FAST_PATH_SAMPLES_COVER_CLIP_BILINEAR)
+
+#define SCALE_BILINEAR_NONE_FLAGS                                       \
+    (SCALE_BILINEAR_FLAGS | FAST_PATH_NONE_REPEAT)
+
 #define AFFINE_NEAREST_FLAGS                                            \
     (FAST_PATH_STANDARD_FLAGS           |                               \
      FAST_PATH_BITS_IMAGE               |                               \
@@ -3932,9 +4097,9 @@ static const pixman_iter_info_t rvv_iters[] = {
       ITER_NARROW | ITER_SRC,
       _pixman_iter_init_bits_stride, rvv_fetch_r5g6b5, NULL
     },
-    /* A scale transform also matches the affine flags below, so this
-     * row-cached entry MUST come first; reordering would silently route
-     * scale sources back onto the four-gather path. */
+    /* A scale transform also matches the affine flags below, so these
+     * row-cached and scalar-fallback entries MUST come first; reordering
+     * would silently route scale sources onto the gather path. */
     { PIXMAN_a8r8g8b8,
       (FAST_PATH_STANDARD_FLAGS                 |
        FAST_PATH_SCALE_TRANSFORM                |
@@ -3944,6 +4109,21 @@ static const pixman_iter_info_t rvv_iters[] = {
       _pixman_bilinear_cover_iter_init,
       NULL, NULL
     },
+    { PIXMAN_x8r8g8b8, SCALE_BILINEAR_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      rvv_scale_iter_init,
+      rvv_fetch_bilinear_affine_8888, NULL
+    },
+    { PIXMAN_a8r8g8b8, SCALE_BILINEAR_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      rvv_scale_iter_init,
+      rvv_fetch_bilinear_affine_8888, NULL
+    },
+    { PIXMAN_x8r8g8b8, SCALE_BILINEAR_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      rvv_scale_iter_init,
+      rvv_fetch_bilinear_affine_8888, NULL
+    },
     { PIXMAN_r5g6b5, AFFINE_BILINEAR_COVER_FLAGS,
       ITER_NARROW | ITER_SRC,
       NULL, rvv_fetch_bilinear_affine_r5g6b5, NULL
@@ -3952,9 +4132,23 @@ static const pixman_iter_info_t rvv_iters[] = {
       ITER_NARROW | ITER_SRC,
       NULL, rvv_fetch_bilinear_affine_r5g6b5, NULL
     },
+    /* A none-repeat 8888 source whose samples cover the clip also matches the
+     * entries below, so keep the cover entries first. */
     { PIXMAN_a8r8g8b8, AFFINE_BILINEAR_COVER_FLAGS,
       ITER_NARROW | ITER_SRC,
       NULL, rvv_fetch_bilinear_affine_cover, NULL
+    },
+    { PIXMAN_x8r8g8b8, AFFINE_BILINEAR_COVER_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_bilinear_affine_8888, NULL
+    },
+    { PIXMAN_a8r8g8b8, AFFINE_BILINEAR_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_bilinear_affine_8888, NULL
+    },
+    { PIXMAN_x8r8g8b8, AFFINE_BILINEAR_NONE_FLAGS,
+      ITER_NARROW | ITER_SRC,
+      NULL, rvv_fetch_bilinear_affine_8888, NULL
     },
     /* A scale transform also matches the affine flags below, so these
      * scalar-fallback entries MUST come first; reordering would silently
