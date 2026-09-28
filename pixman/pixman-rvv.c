@@ -4164,6 +4164,227 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
     return iter->buffer;
 }
 
+typedef struct
+{
+    pixman_iter_get_scanline_t generic_get_scanline;
+    size_t                     capacity;
+    double                    *b;
+    double                    *c;
+    double                    *discr;
+    double                    *t0;
+    double                    *t1;
+    double                     values[];
+} rvv_radial_info_t;
+
+static uint32_t *
+rvv_radial_get_scanline (pixman_iter_t *iter, const uint32_t *mask)
+{
+    pixman_image_t          *image    = iter->image;
+    gradient_t              *gradient = (gradient_t *)image;
+    radial_gradient_t       *radial   = (radial_gradient_t *)image;
+    rvv_radial_info_t       *info     = iter->data;
+    uint32_t                *buffer   = iter->buffer;
+    uint32_t                *end      = buffer + iter->width;
+    pixman_gradient_walker_t walker;
+    pixman_vector_t          v, unit;
+    pixman_fixed_32_32_t     b, db, c, dc, ddc;
+    pixman_fixed_t           x, y, ux, uy;
+    const double            *discr_buf = info->discr;
+    const double            *t0_buf    = info->t0;
+    const double            *t1_buf    = info->t1;
+    pixman_bool_t            repeat_none;
+    double                   dr, mindr;
+
+    if (mask)
+    {
+	/* The generic iterator skips the root solve for masked-out pixels,
+	 * so it is cheaper when more than 25% are masked out. */
+	size_t max_zero = (size_t)iter->width / 4;
+	size_t zeros = 0;
+	size_t i;
+
+	for (i = 0; i < (size_t)iter->width && zeros <= max_zero;)
+	{
+	    size_t vl = __riscv_vsetvl_e32m2 ((size_t)iter->width - i);
+	    vbool16_t empty = __riscv_vmseq_vx_u32m2_b16 (
+		__riscv_vle32_v_u32m2 (mask + i, vl), 0, vl);
+
+	    zeros += __riscv_vcpop_m_b16 (empty, vl);
+	    i += vl;
+	}
+	if (zeros > max_zero)
+	    return info->generic_get_scanline (iter, mask);
+    }
+
+    if (image->common.transform)
+    {
+	if (!rvv_transform_scanline_start (iter, &x, &y, &ux, &uy))
+	    return iter->buffer;
+    }
+    else
+    {
+	x = pixman_int_to_fixed (iter->x) + pixman_fixed_1 / 2;
+	y = pixman_int_to_fixed (iter->y++) + pixman_fixed_1 / 2;
+	ux = pixman_fixed_1;
+	uy = 0;
+    }
+
+    v.vector[0] = x;
+    v.vector[1] = y;
+    v.vector[2] = pixman_fixed_1;
+    unit.vector[0] = ux;
+    unit.vector[1] = uy;
+
+    _pixman_gradient_walker_init (&walker, gradient, image->common.repeat);
+
+    _pixman_radial_affine_setup (radial, &v, &unit, &b, &db, &c, &dc, &ddc);
+
+    /* Keep these and the *_buf pointers in locals. Otherwise the walker
+     * call forces them to be reloaded for every pixel. */
+    repeat_none = image->common.repeat == PIXMAN_REPEAT_NONE;
+    dr          = radial->delta.radius;
+    mindr       = radial->mindr;
+
+    while (buffer < end)
+    {
+	size_t n = MIN ((size_t)(end - buffer), info->capacity);
+	size_t i;
+
+	for (i = 0; i < n; ++i)
+	{
+	    info->b[i] = b;
+	    info->c[i] = c;
+	    b += db;
+	    c += dc;
+	    dc += ddc;
+	}
+
+	{
+	    size_t       vl    = __riscv_vsetvl_e64m4 (n);
+	    vfloat64m4_t bv    = __riscv_vle64_v_f64m4 (info->b, vl);
+	    vfloat64m4_t cv    = __riscv_vle64_v_f64m4 (info->c, vl);
+	    vfloat64m4_t discr = __riscv_vfmul_vf_f64m4 (
+		__riscv_vfneg_v_f64m4 (cv, vl), radial->a, vl);
+	    vbool16_t    valid;
+	    vfloat64m4_t root;
+
+	    discr = __riscv_vfmacc_vv_f64m4 (discr, bv, bv, vl);
+	    valid = __riscv_vmfge_vf_f64m4_b16 (discr, 0.0, vl);
+	    /* Masked-off lanes raise no exceptions, so negative discriminants
+	     * never reach vfsqrt. */
+	    root  = __riscv_vfsqrt_v_f64m4_mu (valid, discr, discr, vl);
+
+	    __riscv_vse64_v_f64m4 (info->discr, discr, vl);
+	    __riscv_vse64_v_f64m4 (
+		info->t0,
+		__riscv_vfmul_vf_f64m4 (__riscv_vfadd_vv_f64m4 (bv, root, vl),
+					radial->inva, vl),
+		vl);
+	    __riscv_vse64_v_f64m4 (
+		info->t1,
+		__riscv_vfmul_vf_f64m4 (__riscv_vfsub_vv_f64m4 (bv, root, vl),
+					radial->inva, vl),
+		vl);
+	}
+	for (i = 0; i < n; ++i)
+	{
+	    double        t0;
+	    double        t1;
+	    pixman_bool_t t0_valid;
+	    pixman_bool_t t1_valid;
+
+	    if (mask && !mask[i])
+		continue;
+
+	    t0 = t0_buf[i];
+	    t1 = t1_buf[i];
+
+	    if (!(discr_buf[i] >= 0))
+	    {
+		buffer[i] = 0;
+		continue;
+	    }
+
+	    if (repeat_none)
+	    {
+		t0_valid = 0 <= t0 && t0 <= pixman_fixed_1;
+		t1_valid = 0 <= t1 && t1 <= pixman_fixed_1;
+	    }
+	    else
+	    {
+		t0_valid = t0 * dr >= mindr;
+		t1_valid = t1 * dr >= mindr;
+	    }
+
+	    if (t0_valid)
+		_pixman_gradient_walker_write_narrow (&walker, t0, buffer + i);
+	    else if (t1_valid)
+		_pixman_gradient_walker_write_narrow (&walker, t1, buffer + i);
+	    else
+		buffer[i] = 0;
+	}
+
+	buffer += n;
+	if (mask)
+	    mask += n;
+    }
+
+    return iter->buffer;
+}
+
+static void
+rvv_radial_iter_fini (pixman_iter_t *iter)
+{
+    free (iter->data);
+}
+
+static void
+rvv_gradient_iter_init (pixman_iter_t *iter, const pixman_iter_info_t *info)
+{
+    pixman_image_t *image = iter->image;
+
+    switch (image->type)
+    {
+	case RADIAL:
+	    _pixman_radial_gradient_iter_init (image, iter);
+	    if (image->radial.a != 0)
+	    {
+		size_t capacity = __riscv_vsetvl_e64m4 (iter->width);
+		rvv_radial_info_t *radial_info;
+
+		radial_info = malloc (sizeof (*radial_info) +
+				      5 * capacity * sizeof (double));
+		if (!radial_info)
+		    break;
+
+		radial_info->generic_get_scanline = iter->get_scanline;
+		radial_info->capacity = capacity;
+		radial_info->b        = radial_info->values;
+		radial_info->c        = radial_info->b + capacity;
+		radial_info->discr    = radial_info->c + capacity;
+		radial_info->t0       = radial_info->discr + capacity;
+		radial_info->t1       = radial_info->t0 + capacity;
+		iter->data            = radial_info;
+		iter->fini            = rvv_radial_iter_fini;
+		iter->get_scanline    = rvv_radial_get_scanline;
+	    }
+	    break;
+
+	case LINEAR:
+	    _pixman_linear_gradient_iter_init (image, iter);
+	    break;
+
+	case CONICAL:
+	    _pixman_conical_gradient_iter_init (image, iter);
+	    break;
+
+	default:
+	    _pixman_log_error (FUNC,
+			       "Unexpected image type for gradient iterator\n");
+	    break;
+    }
+}
+
 // clang-format off
 #define IMAGE_FLAGS                                                     \
     (FAST_PATH_STANDARD_FLAGS           |                               \
@@ -4215,6 +4436,12 @@ rvv_fetch_nearest_affine_8888 (pixman_iter_t *iter, const uint32_t *mask)
     (AFFINE_NEAREST_COVER_FLAGS | FAST_PATH_SCALE_TRANSFORM)
 
 static const pixman_iter_info_t rvv_iters[] = {
+    /* All gradient types use PIXMAN_unknown; the initializer delegates the
+     * linear and conical cases to their generic iterators. */
+    { PIXMAN_unknown, FAST_PATH_AFFINE_TRANSFORM,
+      ITER_NARROW | ITER_SRC,
+      rvv_gradient_iter_init, NULL, NULL
+    },
     { PIXMAN_a8, IMAGE_FLAGS,
       ITER_NARROW | ITER_SRC,
       _pixman_iter_init_bits_stride, rvv_fetch_a8, NULL
