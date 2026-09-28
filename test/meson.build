@@ -28,6 +28,7 @@ tests = [
   'a1-trap-test',
   'prng-test',
   'radial-invalid',
+  'radial-gradient-test',
   'pdf-op-test',
   'region-test',
   'region-fractional-test',
