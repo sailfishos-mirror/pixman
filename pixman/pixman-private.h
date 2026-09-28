@@ -296,6 +296,16 @@ void
 _pixman_radial_gradient_iter_init (pixman_image_t *image, pixman_iter_t *iter);
 
 void
+_pixman_radial_affine_setup (const radial_gradient_t *radial,
+			     pixman_vector_t         *v,
+			     const pixman_vector_t   *unit,
+			     pixman_fixed_32_32_t    *b,
+			     pixman_fixed_32_32_t    *db,
+			     pixman_fixed_32_32_t    *c,
+			     pixman_fixed_32_32_t    *dc,
+			     pixman_fixed_32_32_t    *ddc);
+
+void
 _pixman_conical_gradient_iter_init (pixman_image_t *image, pixman_iter_t *iter);
 
 void
