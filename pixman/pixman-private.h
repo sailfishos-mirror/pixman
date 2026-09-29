@@ -484,6 +484,12 @@ typedef void (*pixman_combine_float_func_t) (pixman_implementation_t *imp,
 					     const float *	      mask,
 					     int		      n_pixels);
 
+typedef union
+{
+    pixman_combine_32_func_t	f32;
+    pixman_combine_float_func_t	ff;
+} pixman_combine_func_t;
+
 typedef void (*pixman_composite_func_t) (pixman_implementation_t *imp,
 					 pixman_composite_info_t *info);
 typedef pixman_bool_t (*pixman_blt_func_t) (pixman_implementation_t *imp,
@@ -561,7 +567,7 @@ _pixman_implementation_lookup_composite (pixman_implementation_t  *toplevel,
 					 pixman_implementation_t **out_imp,
 					 pixman_composite_func_t  *out_func);
 
-pixman_combine_32_func_t
+pixman_combine_func_t
 _pixman_implementation_lookup_combiner (pixman_implementation_t *imp,
 					pixman_op_t		 op,
 					pixman_bool_t		 component_alpha,
