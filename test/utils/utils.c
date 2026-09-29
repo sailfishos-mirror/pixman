@@ -2072,10 +2072,13 @@ pixel_checker_init (pixel_checker_t *checker, pixman_format_code_t format)
 	break;
     }
 
-    checker->am = ((1U << PIXMAN_FORMAT_A (format)) - 1);
-    checker->rm = ((1U << PIXMAN_FORMAT_R (format)) - 1);
-    checker->gm = ((1U << PIXMAN_FORMAT_G (format)) - 1);
-    checker->bm = ((1U << PIXMAN_FORMAT_B (format)) - 1);
+    /* Float formats have 32 bit channels, where a shift would be undefined */
+#define CHANNEL_MASK(w) ((w) >= 32 ? 0xffffffffU : ((1U << (w)) - 1))
+    checker->am = CHANNEL_MASK (PIXMAN_FORMAT_A (format));
+    checker->rm = CHANNEL_MASK (PIXMAN_FORMAT_R (format));
+    checker->gm = CHANNEL_MASK (PIXMAN_FORMAT_G (format));
+    checker->bm = CHANNEL_MASK (PIXMAN_FORMAT_B (format));
+#undef CHANNEL_MASK
 
     checker->aw = PIXMAN_FORMAT_A (format);
     checker->rw = PIXMAN_FORMAT_R (format);
