@@ -408,6 +408,10 @@ _pixman_gradient_walker_fill_wide(pixman_gradient_walker_t *walker,
 #define N_Y_FRAC(n)     ((n) == 1 ? 1 : (1 << ((n) / 2)) - 1)
 #define N_X_FRAC(n)     ((n) == 1 ? 1 : (1 << ((n) / 2)) + 1)
 
+/* Fuzzed input may overflow; wrap instead of invoking undefined behavior */
+#define ADD_WRAP(a, b) ((pixman_fixed_t) ((uint32_t)(a) + (uint32_t)(b)))
+#define SUB_WRAP(a, b) ((pixman_fixed_t) ((uint32_t)(a) - (uint32_t)(b)))
+
 #define STEP_Y_SMALL(n) (pixman_fixed_1 / N_Y_FRAC (n))
 #define STEP_Y_BIG(n)   (pixman_fixed_1 - (N_Y_FRAC (n) - 1) * STEP_Y_SMALL (n))
 
