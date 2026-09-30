@@ -1,5 +1,5 @@
 ARG BASE_IMAGE=docker.io/debian
-ARG BASE_IMAGE_TAG=bookworm-slim
+ARG BASE_IMAGE_TAG=trixie-slim
 FROM ${BASE_IMAGE}:${BASE_IMAGE_TAG} AS base-image
 
 ENV APT_UPDATE="apt-get update" \
@@ -13,7 +13,8 @@ LABEL org.opencontainers.image.title="Pixman build environment for platform cove
 
 ARG GCOVR_VERSION="~=7.2"
 ARG MESON_VERSION="~=1.7"
-RUN echo "deb http://deb.debian.org/debian bookworm-backports main" >  /etc/apt/sources.list.d/debian-12-backports.list \
+RUN . /etc/os-release \
+    && echo "deb http://deb.debian.org/debian ${VERSION_CODENAME}-backports main" > /etc/apt/sources.list.d/backports.list \
     && ${APT_UPDATE} \
     && ${APT_INSTALL} \
         # Build dependencies.
@@ -47,11 +48,13 @@ RUN echo "deb http://deb.debian.org/debian bookworm-backports main" >  /etc/apt/
     && meson --version
 
 FROM base AS llvm-base
-# LLVM 16 is the highest available in Bookworm. Preferably, we should use the
-# same version for all platforms, but it's not possible at the moment.
-ARG LLVM_VERSION=16
+# Use the newest LLVM from backports. Preferably, we should use the same
+# version for all platforms, but it's not possible at the moment, as some
+# platforms are not supported by Trixie.
+ARG LLVM_VERSION=21
 RUN ${APT_UPDATE} \
     && ${APT_INSTALL} \
+        -t $(. /etc/os-release && echo ${VERSION_CODENAME}-backports) \
         clang-${LLVM_VERSION} \
         libclang-rt-${LLVM_VERSION}-dev \
         lld-${LLVM_VERSION} \
@@ -63,7 +66,7 @@ RUN ${APT_UPDATE} \
     && ln -f /usr/bin/llvm-strip-${LLVM_VERSION} /usr/bin/llvm-strip
 
 FROM llvm-base AS native-base
-ARG LLVM_VERSION=16
+ARG LLVM_VERSION=21
 RUN ${APT_UPDATE} \
     && ${APT_INSTALL} \
         # Runtime library dependencies.
@@ -73,7 +76,9 @@ RUN ${APT_UPDATE} \
     # Install libomp-dev if available (OpenMP support for LLVM). It's done only
     # for the native images, as OpenMP support in cross-build environment is
     # tricky for LLVM.
-    && (${APT_INSTALL} libomp-${LLVM_VERSION}-dev \
+    && (${APT_INSTALL} \
+            -t $(. /etc/os-release && echo ${VERSION_CODENAME}-backports) \
+            libomp-${LLVM_VERSION}-dev \
         || echo "OpenMP not available on this platform.") \
     && ${APT_CLEANUP}
 
