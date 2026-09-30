@@ -70,6 +70,11 @@ spec:
         Additional suffix for the job name. Can be used to prevent job
         duplication for jobs for the same target.
       default: ""
+    build_job_name_suffix:
+      description:
+        Suffix of the build job this job depends on (see `job_name_suffix` in
+        the build template).
+      default: ""
     allow_failure:
       description:
         Set the `allow_failure` flag for jobs that are expected to fail.
@@ -108,7 +113,7 @@ spec:
   retry: $[[ inputs.retry ]]
   timeout: $[[ inputs.timeout ]]
   needs:
-    - job: build:$[[ inputs.target ]]
+    - job: build:$[[ inputs.target ]]$[[ inputs.build_job_name_suffix ]]
       parallel:
         matrix:
           - TOOLCHAIN: $[[ inputs.toolchain ]]

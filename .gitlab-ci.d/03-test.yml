@@ -141,6 +141,21 @@ include:
       runner_tag: "$[[ inputs.runner_tag_amd64 ]]"
   - local: .gitlab-ci.d/templates/test.yml
     inputs:
+      target: linux-amd64
+      # AddressSanitizer and UndefinedBehaviorSanitizer. Meson's test runner
+      # makes the first reported error abort the test.
+      job_name_suffix: ":sanitize"
+      build_job_name_suffix: ":sanitize"
+      pixman_disable:
+        - ""
+        - "fast"
+        - "wholeops"
+      active_target_pattern: $[[ inputs.active_target_pattern ]]
+      common_changed_paths: *common-changed-paths
+      arch_changed_paths: *x86-changed-paths
+      runner_tag: "$[[ inputs.runner_tag_amd64 ]]"
+  - local: .gitlab-ci.d/templates/test.yml
+    inputs:
       target: linux-arm-v5
       toolchain: [gnu]  # TODO: https://gitlab.freedesktop.org/pixman/pixman/-/issues/107
       pixman_disable: ["arm-neon"] # Test only arm-simd.

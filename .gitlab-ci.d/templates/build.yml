@@ -40,6 +40,10 @@ spec:
         most reliable and uniform (so disable for cross environments).
       type: boolean
       default: true
+    meson_args:
+      description:
+        Additional arguments passed to `meson setup`.
+      default: ""
     job_name_prefix:
       description:
         Additional prefix for the job name. Can be used to disable a job with a
@@ -112,6 +116,7 @@ spec:
     - meson setup ${BUILD_DIR}
         --cross-file .gitlab-ci.d/meson-cross/${TARGET}-${TOOLCHAIN}.meson
         -Dc_args="${COV_C_ARGS}" ${COV_MESON_BUILD_ARGS}
+        $[[ inputs.meson_args ]]
     - meson compile -C ${BUILD_DIR}
   artifacts:
     when: always

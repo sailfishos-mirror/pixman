@@ -128,6 +128,16 @@ include:
       runner_tag: $[[ inputs.runner_tag_amd64 ]]
   - local: .gitlab-ci.d/templates/build.yml
     inputs:
+      target: linux-amd64
+      job_name_suffix: ":sanitize"
+      meson_args: -Db_sanitize=address,undefined -Db_lundef=false
+      enable_gnu_coverage: false
+      active_target_pattern: $[[ inputs.active_target_pattern ]]
+      common_changed_paths: *common-changed-paths
+      arch_changed_paths: *x86-changed-paths
+      runner_tag: $[[ inputs.runner_tag_amd64 ]]
+  - local: .gitlab-ci.d/templates/build.yml
+    inputs:
       target: linux-arm-v5
       # Disable coverage, as the tests take too long to run with a single thread.
       enable_gnu_coverage: false
