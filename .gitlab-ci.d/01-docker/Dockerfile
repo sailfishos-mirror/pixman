@@ -21,11 +21,6 @@ RUN echo "deb http://deb.debian.org/debian bookworm-backports main" >  /etc/apt/
         ninja-build \
         pkg-config \
         # pipx dependencies.
-        python3-argcomplete \
-        python3-packaging \
-        python3-pip \
-        python3-platformdirs \
-        python3-userpath \
         python3-venv \
         # gcovr dependencies.
         python3-lxml \
@@ -36,8 +31,12 @@ RUN echo "deb http://deb.debian.org/debian bookworm-backports main" >  /etc/apt/
         qemu-user \
     && ${APT_CLEANUP} \
     # Install pipx using pip to have a more recent version of pipx, which
-    # supports the `--global` flag.
-    && pip install pipx --break-system-packages \
+    # supports the `--global` flag. Use a dedicated venv, as recent pipx
+    # requires newer dependencies than Debian provides, and pip cannot
+    # replace Debian-installed packages.
+    && python3 -m venv /opt/pipx-venv \
+    && /opt/pipx-venv/bin/pip install pipx \
+    && ln -s /opt/pipx-venv/bin/pipx /usr/local/bin/pipx \
     # Install a recent version of meson and gcovr using pipx to have the same
     # version across all variants regardless of base.
     && pipx install --global --system-site-packages \
