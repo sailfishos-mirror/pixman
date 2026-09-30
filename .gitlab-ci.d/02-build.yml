@@ -24,7 +24,7 @@ variables:
 .common-changed-paths: &common-changed-paths
   - .gitlab-ci.d/**/*
   - meson.build
-  - meson_options.txt
+  - meson.options
   - subprojects/**/*
   - test/**/*
   - demos/**/*
