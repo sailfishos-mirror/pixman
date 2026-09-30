@@ -2216,6 +2216,12 @@ pixel_checker_convert_pixel_to_string (const pixel_checker_t *checker,
     uint32_t value;
     const float *f;
 
+    if (!pixel)
+    {
+	snprintf (buf, len, "out of bounds");
+	return;
+    }
+
     if (PIXMAN_FORMAT_TYPE (checker->format) == PIXMAN_TYPE_RGBA_FLOAT)
     {
 	f = (const float *)pixel;

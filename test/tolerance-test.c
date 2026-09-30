@@ -155,6 +155,7 @@ get_color (pixel_checker_t *checker,
 {
     if (!access (image, x, y, pixel))
     {
+	*pixel = NULL;
 	color->a = 0.0;
 	color->r = 0.0;
 	color->g = 0.0;
@@ -167,6 +168,22 @@ get_color (pixel_checker_t *checker,
     }
 }
             
+/* Formats a pixel for the regression-table entry printed on failure. An
+ * out-of-bounds pixel has no value that could go in the table, so print a
+ * comment that makes a pasted entry fail to compile.
+ */
+static void
+convert_table_pixel_to_string (const pixel_checker_t *checker,
+			       const uint8_t         *pixel,
+			       char                  *buf,
+			       size_t                 len)
+{
+    if (!pixel)
+	snprintf (buf, len, "/* out of bounds */");
+    else
+	pixel_checker_convert_pixel_to_string (checker, pixel, buf, len);
+}
+
 static pixman_bool_t
 verify (int test_no,
         pixman_op_t op,
@@ -274,12 +291,12 @@ verify (int test_no,
 			u.g, u.b);
 		printf ("\n");
 		printf ("    { %s,\n", operator_name (op));
-		pixel_checker_convert_pixel_to_string (&src_checker, src_pixel,
-						       buf, sizeof buf);
+		convert_table_pixel_to_string (&src_checker, src_pixel,
+					       buf, sizeof buf);
 		printf ("      PIXMAN_%s,\t%s,\n",
 			format_name (source->bits.format), buf);
-		pixel_checker_convert_pixel_to_string (
-		    &mask_checker, mask_pixel, buf, sizeof buf);
+		convert_table_pixel_to_string (&mask_checker, mask_pixel,
+					       buf, sizeof buf);
 		printf ("      PIXMAN_%s,\t%s,\n",
 			format_name (mask->bits.format), buf);
 		pixel_checker_convert_pixel_to_string (
