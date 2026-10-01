@@ -132,7 +132,10 @@ detect_cpu_features (void)
     arm_cpu_features_t features = 0;
     unsigned long hwcap = 0;
 
-    elf_aux_info (AT_HWCAP, &hwcap, sizeof(hwcap));
+    if (elf_aux_info (AT_HWCAP, &hwcap, sizeof(hwcap)) != 0)
+    {
+        return 0;
+    }
 
     if (hwcap & HWCAP_VFP)
         features |= ARM_VFP;
