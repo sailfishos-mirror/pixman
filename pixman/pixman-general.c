@@ -165,26 +165,17 @@ general_composite_rect  (pixman_implementation_t *imp,
 
 	if (!scanline_buffer)
 	    return;
+    }
 
-	memset (scanline_buffer, 0, width * Bpp * 3 + 15 * 3);
-    }
-    else
-    {
-	memset (stack_scanline_buffer, 0, sizeof (stack_scanline_buffer));
-    }
+    /* Clear the part of the buffer we use, so iterators never see
+     * uninitialized memory and wide buffers contain no NaNs.
+     */
+    memset (scanline_buffer, 0, width * Bpp * 3 + 15 * 3);
 
     src_buffer = ALIGN (scanline_buffer);
     mask_buffer = ALIGN (src_buffer + width * Bpp);
     dest_buffer = ALIGN (mask_buffer + width * Bpp);
 
-    if (width_flag == ITER_WIDE)
-    {
-	/* To make sure there aren't any NANs in the buffers */
-	memset (src_buffer, 0, width * Bpp);
-	memset (mask_buffer, 0, width * Bpp);
-	memset (dest_buffer, 0, width * Bpp);
-    }
-    
     /* src iter */
     src_iter_flags = width_flag | op_flags[op].src | ITER_SRC;
 
@@ -242,7 +233,7 @@ general_composite_rect  (pixman_implementation_t *imp,
 	mask_iter.fini (&mask_iter);
     if (dest_iter.fini)
 	dest_iter.fini (&dest_iter);
-    
+
     if (scanline_buffer != (uint8_t *) stack_scanline_buffer)
 	free (scanline_buffer);
 }
@@ -265,4 +256,3 @@ _pixman_implementation_create_general (void)
 
     return imp;
 }
-
